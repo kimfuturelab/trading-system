@@ -2,10 +2,6 @@ const SPREADSHEET_ID = '1POt3TiYivKugAWAeBsOLUAaPLiVGyPy2DrWNgkOvweU';
 const RAW_SHEET = '원시_TOP100';
 const THEME_SHEET = '테마_분류';
 
-/**
- * 최초 1회만 실행.
- * CHANGE_ME 한 곳만 실제 Secret으로 바꾸고 실행한 뒤 다시 CHANGE_ME로 복구해도 됩니다.
- */
 function setIngestSecretOnce() {
   const secret = 'CHANGE_ME';
   if (!secret || secret === 'CHANGE_ME') {
@@ -115,9 +111,20 @@ function writeTop100_(payload) {
 }
 
 /**
- * 테마_분류 A:J
- * 종목코드 | 종목명 | 등록테마수 | 등록테마목록 | 오늘 대표테마 | 대표테마코드
- * | 매핑상태 | 매핑출처 | 마지막확인시각 | 비고
+ * 테마_분류 A:M
+ * A 종목코드
+ * B 종목명
+ * C 등록테마수
+ * D 등록테마목록
+ * E 오늘 대표테마
+ * F 대표테마코드
+ * G 매핑상태
+ * H 매핑출처
+ * I 마지막확인시각
+ * J 비고
+ * K 종목유형
+ * L 집계대상
+ * M 테마보완필요
  *
  * E/F는 종목코드 기준 기존 값을 보존합니다.
  */
@@ -130,9 +137,18 @@ function writeThemeMap_(payload) {
   if (!rows.length) throw new Error('수신된 테마 매핑 데이터가 없습니다.');
   if (rows.length > 100) throw new Error(`테마 매핑 100행 초과: ${rows.length}`);
 
-  // 기존 오늘 대표테마/대표테마코드를 종목코드 기준으로 보존.
+  if (sheet.getMaxColumns() < 13) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), 13 - sheet.getMaxColumns());
+  }
+
+  const headers = [
+    '종목코드', '종목명', '등록테마수', '등록테마목록', '오늘 대표테마', '대표테마코드',
+    '매핑상태', '매핑출처', '마지막확인시각', '비고', '종목유형', '집계대상', '테마보완필요'
+  ];
+  sheet.getRange(1, 1, 1, 13).setValues([headers]);
+
   const maxDataRows = Math.max(100, sheet.getMaxRows() - 1);
-  const oldValues = sheet.getRange(2, 1, maxDataRows, 10).getValues();
+  const oldValues = sheet.getRange(2, 1, maxDataRows, 13).getValues();
   const representativeByCode = {};
   oldValues.forEach(r => {
     const code = String(r[0] || '').trim();
@@ -152,9 +168,20 @@ function writeThemeMap_(payload) {
       .map(t => `${String(t.theme_code || '')}:${String(t.theme_name || '')}`)
       .join(' | ');
     const status = String(r.mapping_status || (themes.length ? 'KIWOOM_THEME' : 'NO_THEME'));
-    const note = status === 'NO_THEME'
-      ? '키움 등록테마 0개 — 종목유형 판별 후 일반주는 보조 매핑 필요'
-      : `TOP100 순위 ${numOrBlank_(r.rank)}`;
+    const instrumentType = String(r.instrument_type || 'UNKNOWN');
+    const aggregationPolicy = String(r.aggregation_policy || 'REVIEW');
+    const needsEnrichment = !!r.needs_theme_enrichment;
+
+    let note;
+    if (aggregationPolicy === 'EXCLUDE') {
+      note = `집계 제외 종목유형: ${instrumentType}`;
+    } else if (needsEnrichment) {
+      note = '일반주인데 키움 등록테마 0개 — 보조 테마 매핑 필요';
+    } else if (status === 'CACHE_MISSING') {
+      note = '테마 캐시 누락 — 재조회 필요';
+    } else {
+      note = `TOP100 순위 ${numOrBlank_(r.rank)}`;
+    }
 
     return [
       code,
@@ -166,16 +193,19 @@ function writeThemeMap_(payload) {
       status,
       String(r.mapping_source || payload.source || ''),
       String(r.checked_at || ''),
-      note
+      note,
+      instrumentType,
+      aggregationPolicy,
+      needsEnrichment ? 'Y' : 'N'
     ];
   });
 
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
   try {
-    sheet.getRange(2, 1, maxDataRows, 10).clearContent();
+    sheet.getRange(2, 1, maxDataRows, 13).clearContent();
     sheet.getRange(2, 1, maxDataRows, 1).setNumberFormat('@');
-    sheet.getRange(2, 1, values.length, 10).setValues(values);
+    sheet.getRange(2, 1, values.length, 13).setValues(values);
     sheet.getRange(2, 3, values.length, 1).setNumberFormat('0');
     SpreadsheetApp.flush();
   } finally {
