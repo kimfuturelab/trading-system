@@ -5,8 +5,8 @@ const RAW_SHEET = '원시_TOP100';
  * One-time setup helper.
  * 1) Replace CHANGE_ME with a long random string.
  * 2) Run this function once in Apps Script editor.
- * 3) Put the same value in collector/.env as INGEST_SECRET.
- * 4) After setup, you may blank the literal again.
+ * 3) Put the same value in market-flow.env as WEBHOOK_SECRET.
+ * 4) After setup, you may restore CHANGE_ME in source code.
  */
 function setIngestSecretOnce() {
   const secret = 'CHANGE_ME';
@@ -17,7 +17,7 @@ function setIngestSecretOnce() {
 }
 
 function doGet() {
-  return json_({ ok: true, service: 'trading-system-ingest', ts: new Date().toISOString() });
+  return json_({ ok: true, service: 'market-flow-ingest', ts: new Date().toISOString() });
 }
 
 function doPost(e) {
@@ -80,8 +80,16 @@ function writeTop100_(payload) {
   lock.waitLock(15000);
   try {
     const maxDataRows = Math.max(100, sheet.getMaxRows() - 1);
+
+    // Clear old values first.
     sheet.getRange(2, 1, maxDataRows, 14).clearContent();
+
+    // CRITICAL: stock codes must remain text so 005930/000660 keep leading zeros.
+    // This must be applied BEFORE setValues().
+    sheet.getRange(2, 3, maxDataRows, 1).setNumberFormat('@');
+
     sheet.getRange(2, 1, values.length, 14).setValues(values);
+    sheet.getRange(2, 6, values.length, 1).setNumberFormat('#,##0');
     sheet.getRange(2, 7, values.length, 1).setNumberFormat('0.00');
     sheet.getRange(2, 8, values.length, 1).setNumberFormat('#,##0.00');
     SpreadsheetApp.flush();
