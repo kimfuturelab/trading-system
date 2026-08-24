@@ -15,6 +15,7 @@ KST = ZoneInfo("Asia/Seoul")
 DEFAULT_PROJECT_ENV = Path.home() / "market-flow.env"
 DEFAULT_CACHE_FILE = Path.home() / ".market-flow-theme-cache.json"
 DEFAULT_LATEST_TOP100_FILE = Path.home() / ".market-flow-top100-latest.json"
+DEFAULT_INSTRUMENT_CACHE_FILE = Path.home() / ".market-flow-instrument-cache.json"
 
 
 def load_env_file(path: Path) -> None:
@@ -46,9 +47,24 @@ def load_json(path: Path) -> dict:
     return data
 
 
-def build_rows(latest: dict, cache: dict) -> list[dict]:
+def build_instrument_index(instrument_cache: dict) -> dict[str, dict]:
+    rows = instrument_cache.get("rows") or []
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("종목유형 캐시 rows가 비어 있습니다.")
+    index: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("stock_code", "")).strip()
+        if code:
+            index[code] = row
+    return index
+
+
+def build_rows(latest: dict, cache: dict, instrument_cache: dict) -> list[dict]:
     top_rows = latest.get("rows") or []
     stocks = cache.get("stocks") or {}
+    instruments = build_instrument_index(instrument_cache)
     if not isinstance(top_rows, list) or not top_rows:
         raise RuntimeError("최신 TOP100 rows가 비어 있습니다.")
     if not isinstance(stocks, dict):
@@ -60,11 +76,15 @@ def build_rows(latest: dict, cache: dict) -> list[dict]:
         if not code:
             continue
         entry = stocks.get(code) or {}
+        inst = instruments.get(code) or {}
         themes = entry.get("themes") or []
         if not isinstance(themes, list):
             themes = []
         checked_at = str(entry.get("checked_at", "")).strip()
         status = "KIWOOM_THEME" if themes else ("NO_THEME" if entry else "CACHE_MISSING")
+        instrument_type = str(inst.get("instrument_type") or "UNKNOWN").strip()
+        aggregation_policy = str(inst.get("aggregation_policy") or "REVIEW").strip()
+        needs_theme_enrichment = bool(inst.get("needs_theme_enrichment", False))
         result.append({
             "rank": row.get("rank"),
             "stock_code": code,
@@ -74,6 +94,9 @@ def build_rows(latest: dict, cache: dict) -> list[dict]:
             "mapping_status": status,
             "mapping_source": "kiwoom-ka90001-stock-cache",
             "checked_at": checked_at,
+            "instrument_type": instrument_type,
+            "aggregation_policy": aggregation_policy,
+            "needs_theme_enrichment": needs_theme_enrichment,
         })
     result.sort(key=lambda r: (r.get("rank") is None, r.get("rank") or 9999))
     return result
@@ -107,33 +130,48 @@ def post_webhook(payload: dict) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="3.5단계 테마 캐시 → Google Sheet exporter")
+    parser = argparse.ArgumentParser(description="3.5단계 테마/종목유형 캐시 → Google Sheet exporter")
     parser.add_argument("--project-env", default=str(DEFAULT_PROJECT_ENV))
     parser.add_argument("--cache-file", default=str(DEFAULT_CACHE_FILE))
     parser.add_argument("--latest-top100-file", default=str(DEFAULT_LATEST_TOP100_FILE))
+    parser.add_argument("--instrument-cache-file", default=str(DEFAULT_INSTRUMENT_CACHE_FILE))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     try:
         load_env_file(Path(args.project_env).expanduser())
         require_env(["WEBHOOK_URL", "WEBHOOK_SECRET"])
-        cache_path = Path(args.cache_file).expanduser()
-        latest_path = Path(args.latest_top100_file).expanduser()
-        cache = load_json(cache_path)
-        latest = load_json(latest_path)
-        rows = build_rows(latest, cache)
+        cache = load_json(Path(args.cache_file).expanduser())
+        latest = load_json(Path(args.latest_top100_file).expanduser())
+        instrument_cache = load_json(Path(args.instrument_cache_file).expanduser())
+        rows = build_rows(latest, cache, instrument_cache)
         if len(rows) != 100:
             print(f"[WARN] theme_map rows={len(rows)} (expected 100)", flush=True)
 
         zero_theme = sum(1 for r in rows if r["theme_count"] == 0)
         multi_theme = sum(1 for r in rows if r["theme_count"] > 1)
         missing = sum(1 for r in rows if r["mapping_status"] == "CACHE_MISSING")
-        print(f"rows={len(rows)} zero_theme={zero_theme} multi_theme={multi_theme} cache_missing={missing}")
+        include = sum(1 for r in rows if r["aggregation_policy"] == "INCLUDE")
+        exclude = sum(1 for r in rows if r["aggregation_policy"] == "EXCLUDE")
+        review = sum(1 for r in rows if r["aggregation_policy"] == "REVIEW")
+        enrich = sum(1 for r in rows if r["needs_theme_enrichment"])
+        unknown = sum(1 for r in rows if r["instrument_type"] == "UNKNOWN")
+
+        print(
+            f"rows={len(rows)} zero_theme={zero_theme} multi_theme={multi_theme} "
+            f"cache_missing={missing} include={include} exclude={exclude} "
+            f"review={review} theme_enrichment={enrich} unknown_type={unknown}"
+        )
         for r in rows[:10]:
             theme_text = ", ".join(
                 f"{t.get('theme_code','')}:{t.get('theme_name','')}" for t in r.get("themes", [])
             ) or "NO_THEME"
-            print(f"{r.get('rank'):>3} {r['stock_code']} {r['stock_name']} themes={r['theme_count']} {theme_text}")
+            print(
+                f"{r.get('rank'):>3} {r['stock_code']} {r['stock_name']} "
+                f"type={r['instrument_type']} policy={r['aggregation_policy']} "
+                f"enrich={'Y' if r['needs_theme_enrichment'] else 'N'} "
+                f"themes={r['theme_count']} {theme_text}"
+            )
 
         if args.dry_run:
             print("[DRY-RUN] Webhook 전송 생략")
@@ -142,7 +180,7 @@ def main() -> int:
         payload = {
             "secret": os.environ["WEBHOOK_SECRET"].strip(),
             "type": "theme_map",
-            "source": "theme_mapper-cache",
+            "source": "theme+instrument-cache",
             "captured_at": latest.get("captured_at") or datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
             "row_count": len(rows),
             "rows": rows,
