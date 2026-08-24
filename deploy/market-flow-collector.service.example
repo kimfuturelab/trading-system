@@ -6,14 +6,16 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=YOUR_LINUX_USER
-WorkingDirectory=/home/YOUR_LINUX_USER/trading-system/collector
+WorkingDirectory=/home/YOUR_LINUX_USER/market-flow
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/YOUR_LINUX_USER/trading-system/collector/.venv/bin/python /home/YOUR_LINUX_USER/trading-system/collector/kiwoom_collector.py --loop
+ExecStart=/usr/bin/python3 /home/YOUR_LINUX_USER/market-flow/market_flow_cli_collector.py --loop --auth-env /home/YOUR_LINUX_USER/api-read-v2.env --project-env /home/YOUR_LINUX_USER/market-flow.env
 Restart=always
 RestartSec=10
 
-# Keep credentials in collector/.env with chmod 600.
-# The Python loop itself suppresses Kiwoom calls outside COLLECT_START_HHMM~COLLECT_END_HHMM KST.
+# Existing hynix-collector.service remains untouched.
+# APP_KEY/APP_SECRET/KIWOOM_MODE are read from the existing auth env only.
+# 3.5 Webhook and collection settings live in market-flow.env.
+# The Python loop suppresses Kiwoom calls outside COLLECT_START_HHMM~COLLECT_END_HHMM KST.
 
 [Install]
 WantedBy=multi-user.target
