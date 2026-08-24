@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 KST = ZoneInfo("Asia/Seoul")
 DEFAULT_AUTH_ENV = Path.home() / "api-read-v2.env"
 DEFAULT_CACHE_FILE = Path.home() / ".market-flow-theme-cache.json"
-DEFAULT_RANK_STATE_FILE = Path.home() / ".market-flow-rank-state.json"
+DEFAULT_LATEST_TOP100_FILE = Path.home() / ".market-flow-top100-latest.json"
 
 
 def load_env_file(path: Path) -> None:
@@ -113,7 +113,7 @@ def fetch_themes_for_stock(cli: str, stock_code: str) -> list[dict]:
             "group_change_rate_pct": to_number(row.get("flu_rt")),
             "stock_count": int(to_number(row.get("stk_num")) or 0),
             "rising_stock_count": int(to_number(row.get("rising_stk_num")) or 0),
-            "falling_stock_count": int(to_number(row.get("falling_stk_num")) or 0),
+            "falling_stock_count": int(to_number(row.get("fall_stk_num")) or 0),
             "main_stocks": str(row.get("main_stk", "")).strip(),
         })
     return themes
@@ -158,59 +158,107 @@ def cache_is_fresh(entry: dict, max_age_hours: float) -> bool:
     return datetime.now(KST) - checked <= timedelta(hours=max_age_hours)
 
 
-def load_rank_state(path: Path) -> list[dict]:
+def load_latest_top100(path: Path) -> tuple[str, list[dict]]:
     if not path.exists():
         raise RuntimeError(
-            f"TOP100 순위 상태파일 없음: {path}. market-flow collector가 먼저 정상 수집되어야 합니다."
+            f"최신 TOP100 파일 없음: {path}. market-flow collector를 1회 실행해 파일을 먼저 생성하세요."
         )
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
-        raise RuntimeError(f"TOP100 순위 상태파일 파싱 실패: {exc}") from exc
-    if not isinstance(raw, dict) or not raw:
-        raise RuntimeError("TOP100 순위 상태파일이 비어 있거나 형식이 잘못되었습니다.")
+        raise RuntimeError(f"최신 TOP100 파일 파싱 실패: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("최신 TOP100 파일 형식이 잘못되었습니다.")
+    rows = payload.get("rows") or []
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("최신 TOP100 파일에 rows가 없습니다.")
 
     targets: list[dict] = []
-    for raw_code, raw_rank in raw.items():
-        code = canonical_stock_code(raw_code)
+    for row in rows[:100]:
+        if not isinstance(row, dict):
+            continue
+        code = canonical_stock_code(row.get("stock_code") or row.get("raw_stock_code") or "")
         if not code:
             continue
-        try:
-            rank = int(raw_rank)
-        except (TypeError, ValueError):
-            rank = None
         targets.append({
             "stock_code": code,
-            "raw_stock_code": str(raw_code),
-            "stock_name": "",
-            "rank": rank,
+            "raw_stock_code": str(row.get("raw_stock_code") or code),
+            "stock_name": str(row.get("stock_name") or "").strip(),
+            "rank": row.get("rank"),
+            "captured_at": str(row.get("captured_at") or payload.get("captured_at") or ""),
+            "current_price": row.get("current_price"),
+            "change_rate_pct": row.get("change_rate_pct"),
+            "trading_value_eok": row.get("trading_value_eok"),
         })
     targets.sort(key=lambda row: row.get("rank") if row.get("rank") is not None else 9999)
-    return targets[:100]
+    return str(payload.get("captured_at") or ""), targets[:100]
 
 
-def resolve_targets(codes_arg: str, rank_state_path: Path) -> list[dict]:
+def resolve_targets(codes_arg: str, latest_path: Path, cache: dict) -> tuple[str, list[dict]]:
+    latest_captured_at = ""
+    latest_rows: list[dict] = []
+    if latest_path.exists():
+        try:
+            latest_captured_at, latest_rows = load_latest_top100(latest_path)
+        except Exception:
+            latest_rows = []
+
+    latest_by_code = {row["stock_code"]: row for row in latest_rows}
+
     if codes_arg.strip():
         requested = [canonical_stock_code(x) for x in codes_arg.split(",") if x.strip()]
-        return [
-            {
+        targets: list[dict] = []
+        for code in requested:
+            if not code:
+                continue
+            if code in latest_by_code:
+                targets.append(latest_by_code[code])
+                continue
+            entry = cache.get("stocks", {}).get(code, {})
+            targets.append({
                 "stock_code": code,
                 "raw_stock_code": code,
-                "stock_name": "",
-                "rank": None,
-            }
-            for code in requested
-            if code
-        ]
-    return load_rank_state(rank_state_path)
+                "stock_name": str(entry.get("stock_name", "")),
+                "rank": entry.get("top100_rank"),
+                "captured_at": entry.get("top100_captured_at", ""),
+                "current_price": entry.get("current_price"),
+                "change_rate_pct": entry.get("change_rate_pct"),
+                "trading_value_eok": entry.get("trading_value_eok"),
+            })
+        return latest_captured_at, targets
+
+    if not latest_rows:
+        latest_captured_at, latest_rows = load_latest_top100(latest_path)
+    return latest_captured_at, latest_rows
+
+
+def update_entry_market_snapshot(entry: dict, target: dict) -> bool:
+    changed = False
+    fields = {
+        "raw_stock_code": target.get("raw_stock_code"),
+        "stock_name": target.get("stock_name"),
+        "top100_rank": target.get("rank"),
+        "top100_captured_at": target.get("captured_at"),
+        "current_price": target.get("current_price"),
+        "change_rate_pct": target.get("change_rate_pct"),
+        "trading_value_eok": target.get("trading_value_eok"),
+    }
+    for key, value in fields.items():
+        if value in (None, "") and key == "stock_name":
+            continue
+        if entry.get(key) != value:
+            entry[key] = value
+            changed = True
+    return changed
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="3.5단계 TOP100 종목→키움 등록테마 캐시")
     parser.add_argument("--auth-env", default=str(DEFAULT_AUTH_ENV))
     parser.add_argument("--cache-file", default=str(DEFAULT_CACHE_FILE))
-    parser.add_argument("--rank-state-file", default=str(DEFAULT_RANK_STATE_FILE))
-    parser.add_argument("--codes", default="", help="쉼표 구분 종목코드. 비우면 collector의 최신 TOP100 순위 상태파일 사용")
+    parser.add_argument("--latest-top100-file", default=str(DEFAULT_LATEST_TOP100_FILE))
+    parser.add_argument("--codes", default="", help="쉼표 구분 종목코드. 비우면 collector의 최신 TOP100 전체 스냅샷 사용")
     parser.add_argument("--limit", type=int, default=0, help="이번 실행에서 최대 신규조회 종목 수. 0=제한없음")
     parser.add_argument("--sleep", type=float, default=0.4, help="종목별 API 호출 간 대기초")
     parser.add_argument("--max-age-hours", type=float, default=24.0)
@@ -232,9 +280,9 @@ def main() -> int:
         require_env(["KIWOOM_MODE", "APP_KEY", "APP_SECRET"])
         cli = find_cli()
         cache_path = Path(args.cache_file).expanduser()
-        rank_state_path = Path(args.rank_state_file).expanduser()
+        latest_path = Path(args.latest_top100_file).expanduser()
         cache = load_cache(cache_path)
-        targets = resolve_targets(args.codes, rank_state_path)
+        latest_captured_at, targets = resolve_targets(args.codes, latest_path, cache)
     except Exception as exc:
         print(f"CONFIG ERROR: {exc}", file=sys.stderr)
         return 2
@@ -245,15 +293,16 @@ def main() -> int:
     multi_theme = 0
     cache_changed = False
 
+    if latest_captured_at:
+        print(f"latest_top100_captured_at={latest_captured_at}")
+
     for target in targets:
         code = target["stock_code"]
         entry = cache["stocks"].get(code, {})
         if not args.force and entry and cache_is_fresh(entry, args.max_age_hours):
             themes = entry.get("themes") or []
             reused += 1
-
-            if target.get("rank") is not None and entry.get("top100_rank") != target.get("rank"):
-                entry["top100_rank"] = target.get("rank")
+            if update_entry_market_snapshot(entry, target):
                 cache_changed = True
 
             display_name = entry.get("stock_name", "") or target.get("stock_name", "")
@@ -276,14 +325,13 @@ def main() -> int:
         checked_at = datetime.now(KST).isoformat(timespec="seconds")
         old_name = str(entry.get("stock_name", "")).strip() if entry else ""
         stock_name = str(target.get("stock_name", "")).strip() or old_name
-        cache["stocks"][code] = {
+        new_entry = {
             "stock_code": code,
-            "raw_stock_code": target.get("raw_stock_code", code),
-            "stock_name": stock_name,
-            "top100_rank": target.get("rank"),
             "checked_at": checked_at,
             "themes": themes,
         }
+        update_entry_market_snapshot(new_entry, {**target, "stock_name": stock_name})
+        cache["stocks"][code] = new_entry
         save_cache(cache_path, cache)
         queried += 1
         cache_changed = False
@@ -312,7 +360,7 @@ def main() -> int:
     print(f"zero_theme={zero_theme}")
     print(f"multi_theme={multi_theme}")
     print(f"cache_file={cache_path}")
-    print(f"rank_state_file={rank_state_path}")
+    print(f"latest_top100_file={latest_path}")
     return 0
 
 
