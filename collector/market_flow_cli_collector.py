@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 KST = ZoneInfo("Asia/Seoul")
 STATE_FILE = Path.home() / ".market-flow-rank-state.json"
+LATEST_TOP100_FILE = Path.home() / ".market-flow-top100-latest.json"
 DEFAULT_AUTH_ENV = Path.home() / "api-read-v2.env"
 DEFAULT_PROJECT_ENV = Path.home() / "market-flow.env"
 
@@ -106,13 +107,29 @@ def load_previous_ranks() -> dict[str, int]:
         return {}
 
 
+def atomic_write_json(path: Path, payload: object) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
 def save_current_ranks(rows: list[dict]) -> None:
     state = {
         str(row["stock_code"]): int(row["rank"])
         for row in rows
         if row.get("stock_code") and row.get("rank") is not None
     }
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(STATE_FILE, state)
+
+
+def save_latest_top100(rows: list[dict]) -> None:
+    payload = {
+        "version": 1,
+        "captured_at": rows[0].get("captured_at", "") if rows else "",
+        "row_count": len(rows),
+        "rows": rows,
+    }
+    atomic_write_json(LATEST_TOP100_FILE, payload)
 
 
 def fetch_top100(cli: str) -> list[dict]:
@@ -247,14 +264,21 @@ def collect_once(cli: str, *, dry_run: bool = False, bypass_market_guard: bool =
     if not rows:
         raise RuntimeError("사용 가능한 TOP100 데이터가 없습니다.")
 
+    # theme_mapper가 TOP100 API를 다시 호출하지 않도록 최신 전체 스냅샷을 항상 로컬에 보존합니다.
+    save_latest_top100(rows)
+
     print_summary(rows)
     if dry_run:
-        print("[DRY-RUN] Webhook 전송 생략", flush=True)
+        print(f"[DRY-RUN] Webhook 전송 생략 latest_file={LATEST_TOP100_FILE}", flush=True)
         return True
 
     result = post_webhook(rows)
     save_current_ranks(rows)
-    print(f"[OK] recorded={result.get('received', result.get('recorded'))} captured_at={rows[0]['captured_at']}", flush=True)
+    print(
+        f"[OK] recorded={result.get('received', result.get('recorded'))} "
+        f"captured_at={rows[0]['captured_at']} latest_file={LATEST_TOP100_FILE}",
+        flush=True,
+    )
     return True
 
 
