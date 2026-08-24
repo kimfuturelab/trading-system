@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "policy": "Use only when Kiwoom ka90001 stock theme list is empty and aggregation_policy is INCLUDE. Never override Kiwoom official themes.",
+  "reviewed_at": "2026-08-24",
+  "overrides": {
+    "402340": {"stock_name": "SK스퀘어", "theme_code": "S001", "theme_name": "IT/반도체 지주", "confidence": "MEDIUM"},
+    "008930": {"stock_name": "한미사이언스", "theme_code": "S002", "theme_name": "바이오/제약 지주", "confidence": "MEDIUM"},
+    "417030": {"stock_name": "니어스랩", "theme_code": "S003", "theme_name": "드론/AI", "confidence": "MEDIUM"},
+    "124500": {"stock_name": "아이티센글로벌", "theme_code": "S004", "theme_name": "IT서비스/SI", "confidence": "MEDIUM"},
+    "028260": {"stock_name": "삼성물산", "theme_code": "S005", "theme_name": "건설/지주", "confidence": "MEDIUM"},
+    "066570": {"stock_name": "LG전자", "theme_code": "S006", "theme_name": "가전/전자", "confidence": "HIGH"},
+    "196170": {"stock_name": "알테오젠", "theme_code": "370", "theme_name": "신약개발/기술수출", "confidence": "HIGH"},
+    "278470": {"stock_name": "에이피알", "theme_code": "330", "theme_name": "화장품", "confidence": "HIGH"},
+    "005490": {"stock_name": "POSCO홀딩스", "theme_code": "S007", "theme_name": "철강/배터리소재", "confidence": "MEDIUM"},
+    "373220": {"stock_name": "LG에너지솔루션", "theme_code": "140", "theme_name": "2차전지_완제품", "confidence": "HIGH"},
+    "950260": {"stock_name": "인제니아테라퓨틱스(Reg.S)", "theme_code": "370", "theme_name": "신약개발/기술수출", "confidence": "MEDIUM"},
+    "012450": {"stock_name": "한화에어로스페이스", "theme_code": "212", "theme_name": "방위산업", "confidence": "HIGH"},
+    "257720": {"stock_name": "실리콘투", "theme_code": "330", "theme_name": "화장품", "confidence": "HIGH"},
+    "222800": {"stock_name": "심텍", "theme_code": "500", "theme_name": "PCB(인쇄회로기판)", "confidence": "HIGH"},
+    "079550": {"stock_name": "LIG디펜스앤에어로스페이스", "theme_code": "212", "theme_name": "방위산업", "confidence": "HIGH"},
+    "298040": {"stock_name": "효성중공업", "theme_code": "S008", "theme_name": "전력기기", "confidence": "HIGH"},
+    "247540": {"stock_name": "에코프로비엠", "theme_code": "141", "theme_name": "2차전지_소재(양극화물질등)", "confidence": "HIGH"},
+    "475150": {"stock_name": "SK이터닉스", "theme_code": "S009", "theme_name": "신재생에너지", "confidence": "HIGH"},
+    "002990": {"stock_name": "금호건설", "theme_code": "201", "theme_name": "건설_국내주택", "confidence": "HIGH"},
+    "329180": {"stock_name": "HD현대중공업", "theme_code": "222", "theme_name": "조선_해양플랜트", "confidence": "HIGH"},
+    "192820": {"stock_name": "코스맥스", "theme_code": "330", "theme_name": "화장품", "confidence": "HIGH"},
+    "950220": {"stock_name": "네오이뮨텍", "theme_code": "370", "theme_name": "신약개발/기술수출", "confidence": "HIGH"},
+    "353200": {"stock_name": "대덕전자", "theme_code": "500", "theme_name": "PCB(인쇄회로기판)", "confidence": "HIGH"},
+    "041190": {"stock_name": "우리기술투자", "theme_code": "410", "theme_name": "창투", "confidence": "HIGH"},
+    "108490": {"stock_name": "로보티즈", "theme_code": "213", "theme_name": "로봇_지능형", "confidence": "HIGH"}
+  }
+}
