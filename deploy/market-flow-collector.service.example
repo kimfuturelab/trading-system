@@ -1,0 +1,19 @@
+[Unit]
+Description=3.5 Market Flow Kiwoom Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_LINUX_USER
+WorkingDirectory=/home/YOUR_LINUX_USER/trading-system/collector
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/YOUR_LINUX_USER/trading-system/collector/.venv/bin/python /home/YOUR_LINUX_USER/trading-system/collector/kiwoom_collector.py --loop
+Restart=always
+RestartSec=10
+
+# Keep credentials in collector/.env with chmod 600.
+# The Python loop itself suppresses Kiwoom calls outside COLLECT_START_HHMM~COLLECT_END_HHMM KST.
+
+[Install]
+WantedBy=multi-user.target
