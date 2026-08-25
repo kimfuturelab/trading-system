@@ -1,0 +1,16 @@
+[Unit]
+Description=Market Flow Theme Pipeline Watcher
+After=network-online.target market-flow-collector.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=eogus1215
+WorkingDirectory=/home/eogus1215/market-flow
+ExecStart=/usr/bin/python3 /home/eogus1215/market-flow/theme_pipeline_runner.py --loop --poll-seconds 20
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
