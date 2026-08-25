@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -46,17 +47,67 @@ def to_number(value: Any, *, absolute: bool = False) -> float:
     return abs(number) if absolute else number
 
 
+def post_with_rate_limit_retry(
+    session: requests.Session,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    json_body: dict[str, Any] | None = None,
+    timeout: int = 30,
+    label: str = "Kiwoom",
+) -> requests.Response:
+    """POST with conservative retries for Kiwoom HTTP 429 throttling.
+
+    Multiple processes on the same VM/App Key can share the same API limit, so
+    a backfill may collide with another collector even when files/processes are
+    completely separate. 429 is therefore retried with exponential backoff.
+    """
+    waits = (5, 10, 20, 40, 60)
+    for attempt in range(len(waits) + 1):
+        response = session.post(url, headers=headers, json=json_body, timeout=timeout)
+        if response.status_code != 429:
+            response.raise_for_status()
+            return response
+
+        if attempt >= len(waits):
+            response.raise_for_status()
+
+        retry_after_raw = response.headers.get("Retry-After", "").strip()
+        try:
+            retry_after = int(float(retry_after_raw)) if retry_after_raw else 0
+        except ValueError:
+            retry_after = 0
+        wait_seconds = max(waits[attempt], retry_after)
+        print(
+            json.dumps(
+                {
+                    "status": "rate_limited",
+                    "label": label,
+                    "http_status": 429,
+                    "retry_in_seconds": wait_seconds,
+                    "attempt": attempt + 1,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        time.sleep(wait_seconds)
+
+    raise RuntimeError("unreachable")
+
+
 def issue_token(session: requests.Session, base_url: str, app_key: str, app_secret: str) -> str:
-    response = session.post(
+    response = post_with_rate_limit_retry(
+        session,
         f"{base_url}/oauth2/token",
-        json={
+        json_body={
             "grant_type": "client_credentials",
             "appkey": app_key,
             "secretkey": app_secret,
         },
         timeout=20,
+        label="oauth2/token",
     )
-    response.raise_for_status()
     data = response.json()
     if int(data.get("return_code", -1)) != 0:
         raise RuntimeError(f"Kiwoom token error: {data}")
@@ -77,12 +128,7 @@ def fetch_pages(
     column_keys: list[str] | None = None,
     max_pages: int = 10,
 ) -> list[dict[str, Any]]:
-    """Fetch paginated Kiwoom REST rows.
-
-    Kiwoom TR responses may contain each table row either as a dict or as a
-    positional list/tuple. Official examples explicitly support both shapes,
-    so this helper normalizes both into dict rows.
-    """
+    """Fetch paginated Kiwoom REST rows and normalize dict/list row shapes."""
     rows: list[dict[str, Any]] = []
     cont_yn = "N"
     next_key = ""
@@ -98,8 +144,19 @@ def fetch_pages(
             headers["cont-yn"] = cont_yn
             headers["next-key"] = next_key
 
-        response = session.post(f"{base_url}{path}", headers=headers, json=body, timeout=30)
-        response.raise_for_status()
+        # Intentionally pace even successful calls so this one-off backfill is a
+        # good citizen beside the live collector.
+        if page > 0:
+            time.sleep(1.0)
+
+        response = post_with_rate_limit_retry(
+            session,
+            f"{base_url}{path}",
+            headers=headers,
+            json_body=body,
+            timeout=30,
+            label=api_id,
+        )
         data = response.json()
         last_debug = data
         if int(data.get("return_code", 0)) not in (0,):
@@ -164,8 +221,7 @@ def find_sk_broker_code(session: requests.Session, base_url: str, token: str) ->
     if not candidates:
         sample = [{"code": r.get("code"), "name": r.get("name"), "gb": r.get("gb")} for r in rows[:20]]
         raise RuntimeError(
-            "SK증권 member code not found in ka10102. sample="
-            + json.dumps(sample, ensure_ascii=False)
+            "SK증권 member code not found in ka10102. sample=" + json.dumps(sample, ensure_ascii=False)
         )
     return candidates[0]
 
@@ -193,15 +249,8 @@ def fetch_broker_daily(
         },
         table_key="sec_stk_trde_trend",
         column_keys=[
-            "dt",
-            "cur_prc",
-            "pre_sig",
-            "pred_pre",
-            "flu_rt",
-            "acc_trde_qty",
-            "netprps_qty",
-            "buy_qty",
-            "sell_qty",
+            "dt", "cur_prc", "pre_sig", "pred_pre", "flu_rt", "acc_trde_qty",
+            "netprps_qty", "buy_qty", "sell_qty",
         ],
     )
     result: dict[str, dict[str, Any]] = {}
@@ -228,36 +277,13 @@ def fetch_daily_market(
         body={"stk_cd": stock_code, "strt_dt": start_date},
         table_key="daly_trde_dtl",
         column_keys=[
-            "dt",
-            "close_pric",
-            "pred_pre_sig",
-            "pred_pre",
-            "flu_rt",
-            "trde_qty",
-            "trde_prica",
-            "bf_mkrt_trde_qty",
-            "bf_mkrt_trde_wght",
-            "opmr_trde_qty",
-            "opmr_trde_wght",
-            "af_mkrt_trde_qty",
-            "af_mkrt_trde_wght",
-            "tot_3",
-            "prid_trde_qty",
-            "cntr_str",
-            "for_poss",
-            "for_wght",
-            "for_netprps",
-            "orgn_netprps",
-            "ind_netprps",
-            "frgn",
-            "crd_remn_rt",
-            "prm",
-            "bf_mkrt_trde_prica",
-            "bf_mkrt_trde_prica_wght",
-            "opmr_trde_prica",
-            "opmr_trde_prica_wght",
-            "af_mkrt_trde_prica",
-            "af_mkrt_trde_prica_wght",
+            "dt", "close_pric", "pred_pre_sig", "pred_pre", "flu_rt", "trde_qty",
+            "trde_prica", "bf_mkrt_trde_qty", "bf_mkrt_trde_wght", "opmr_trde_qty",
+            "opmr_trde_wght", "af_mkrt_trde_qty", "af_mkrt_trde_wght", "tot_3",
+            "prid_trde_qty", "cntr_str", "for_poss", "for_wght", "for_netprps",
+            "orgn_netprps", "ind_netprps", "frgn", "crd_remn_rt", "prm",
+            "bf_mkrt_trde_prica", "bf_mkrt_trde_prica_wght", "opmr_trde_prica",
+            "opmr_trde_prica_wght", "af_mkrt_trde_prica", "af_mkrt_trde_prica_wght",
         ],
     )
     result: dict[str, dict[str, Any]] = {}
@@ -323,9 +349,12 @@ def main() -> int:
     else:
         broker_code, broker_name = find_sk_broker_code(session, base_url, token)
 
+    # Add a small gap between distinct TRs. This backfill is not latency-sensitive.
+    time.sleep(2.0)
     broker_daily = fetch_broker_daily(
         session, base_url, token, broker_code, args.stock, args.start, args.end
     )
+    time.sleep(2.0)
     market_daily = fetch_daily_market(session, base_url, token, args.stock, args.end)
 
     dates = sorted(dt for dt in broker_daily if args.start <= dt <= args.end)
