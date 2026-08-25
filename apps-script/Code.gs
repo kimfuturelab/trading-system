@@ -1,6 +1,7 @@
 const SPREADSHEET_ID = '1POt3TiYivKugAWAeBsOLUAaPLiVGyPy2DrWNgkOvweU';
 const RAW_SHEET = '원시_TOP100';
 const THEME_SHEET = '테마_분류';
+const THEME_AGG_SHEET = '테마_집계';
 
 function setIngestSecretOnce() {
   const secret = 'CHANGE_ME';
@@ -34,6 +35,8 @@ function doPost(e) {
       result = writeTop100_(payload);
     } else if (payload.type === 'theme_map') {
       result = writeThemeMap_(payload);
+    } else if (payload.type === 'theme_aggregate') {
+      result = writeThemeAggregate_(payload);
     } else {
       return json_({ ok: false, error: 'unsupported_type', type: payload.type || null });
     }
@@ -220,6 +223,96 @@ function writeThemeMap_(payload) {
   };
 }
 
+/**
+ * theme_aggregate payload를 한 번 받아 두 군데를 갱신합니다.
+ * 1) 테마_분류 E:F = 오늘 대표테마 / 대표테마코드
+ * 2) 테마_집계 A:M = 현재 시점 테마 거래대금 집계
+ *
+ * 테마_집계의 I:L은 시간축/점수 단계에서 사용하므로 현재는 비워 둡니다.
+ */
+function writeThemeAggregate_(payload) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const themeSheet = ss.getSheetByName(THEME_SHEET);
+  const aggSheet = ss.getSheetByName(THEME_AGG_SHEET);
+  if (!themeSheet) throw new Error(`시트를 찾을 수 없습니다: ${THEME_SHEET}`);
+  if (!aggSheet) throw new Error(`시트를 찾을 수 없습니다: ${THEME_AGG_SHEET}`);
+
+  const representatives = Array.isArray(payload.representatives) ? payload.representatives : [];
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  if (!representatives.length) throw new Error('대표테마 데이터가 없습니다.');
+  if (!rows.length) throw new Error('테마 집계 데이터가 없습니다.');
+  if (representatives.length > 100) throw new Error(`대표테마 100행 초과: ${representatives.length}`);
+  if (rows.length > 100) throw new Error(`테마 집계 100행 초과: ${rows.length}`);
+
+  const representativeByCode = {};
+  representatives.forEach(r => {
+    const code = String(r.stock_code || '').trim();
+    if (!code) return;
+    representativeByCode[code] = {
+      themeName: String(r.theme_name || ''),
+      themeCode: String(r.theme_code || '')
+    };
+  });
+
+  const maxThemeRows = Math.max(100, themeSheet.getMaxRows() - 1);
+  const themeCodes = themeSheet.getRange(2, 1, maxThemeRows, 1).getValues();
+  const repValues = themeCodes.map(r => {
+    const code = String(r[0] || '').trim();
+    const rep = representativeByCode[code];
+    return rep ? [rep.themeName, rep.themeCode] : ['', ''];
+  });
+
+  const headers = [
+    '기준시각', '테마 순위', '테마', '총 거래대금(억원)', 'TOP100 점유율',
+    'TOP20 종목수', 'TOP100 종목수', '평균 등락률', '순위 지속성',
+    '수급 점수', '가격 강도', '최종 점수', '상태'
+  ];
+
+  const aggValues = rows.map(r => [
+    String(payload.captured_at || ''),
+    numOrBlank_(r.theme_rank),
+    String(r.theme_name || ''),
+    numOrBlank_(r.trading_value_eok),
+    numOrBlank_(r.share_top100_pct),
+    numOrBlank_(r.top20_count),
+    numOrBlank_(r.stock_count),
+    numOrBlank_(r.avg_change_rate_pct),
+    '',
+    '',
+    '',
+    '',
+    'CURRENT'
+  ]);
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    themeSheet.getRange(2, 5, maxThemeRows, 2).clearContent();
+    themeSheet.getRange(2, 5, repValues.length, 2).setValues(repValues);
+    themeSheet.getRange(2, 6, repValues.length, 1).setNumberFormat('@');
+
+    const maxAggRows = Math.max(100, aggSheet.getMaxRows() - 1);
+    aggSheet.getRange(1, 1, 1, 13).setValues([headers]);
+    aggSheet.getRange(2, 1, maxAggRows, 13).clearContent();
+    aggSheet.getRange(2, 1, aggValues.length, 13).setValues(aggValues);
+    aggSheet.getRange(2, 4, aggValues.length, 1).setNumberFormat('#,##0.00');
+    aggSheet.getRange(2, 5, aggValues.length, 1).setNumberFormat('0.00"%"');
+    aggSheet.getRange(2, 8, aggValues.length, 1).setNumberFormat('0.00"%"');
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+
+  return {
+    sheet: THEME_AGG_SHEET,
+    received: rows.length,
+    representatives: representatives.length,
+    captured_at: payload.captured_at || '',
+    source: payload.source || '',
+    selection_rule: payload.selection_rule || ''
+  };
+}
+
 function numOrBlank_(v) {
   if (v === null || v === undefined || v === '') return '';
   const n = Number(v);
@@ -241,6 +334,7 @@ function checkConfig() {
     spreadsheet: ss.getName(),
     rawSheetExists: !!ss.getSheetByName(RAW_SHEET),
     themeSheetExists: !!ss.getSheetByName(THEME_SHEET),
+    themeAggregateSheetExists: !!ss.getSheetByName(THEME_AGG_SHEET),
     ingestSecretExists: secretExists
   });
 }
