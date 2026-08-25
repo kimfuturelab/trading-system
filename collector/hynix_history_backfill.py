@@ -74,11 +74,19 @@ def fetch_pages(
     path: str,
     body: dict[str, Any],
     table_key: str,
+    column_keys: list[str] | None = None,
     max_pages: int = 10,
 ) -> list[dict[str, Any]]:
+    """Fetch paginated Kiwoom REST rows.
+
+    Kiwoom TR responses may contain each table row either as a dict or as a
+    positional list/tuple. Official examples explicitly support both shapes,
+    so this helper normalizes both into dict rows.
+    """
     rows: list[dict[str, Any]] = []
     cont_yn = "N"
     next_key = ""
+    last_debug: dict[str, Any] | None = None
 
     for page in range(max_pages):
         headers = {
@@ -93,17 +101,36 @@ def fetch_pages(
         response = session.post(f"{base_url}{path}", headers=headers, json=body, timeout=30)
         response.raise_for_status()
         data = response.json()
+        last_debug = data
         if int(data.get("return_code", 0)) not in (0,):
             raise RuntimeError(f"{api_id} error: {data}")
 
         records = data.get(table_key) or []
         if isinstance(records, list):
-            rows.extend(r for r in records if isinstance(r, dict))
+            for record in records:
+                if isinstance(record, dict):
+                    rows.append(record)
+                elif isinstance(record, (list, tuple)) and column_keys:
+                    rows.append(dict(zip(column_keys, record)))
 
         cont_yn = str(response.headers.get("cont-yn", "N")).upper()
         next_key = str(response.headers.get("next-key", ""))
         if cont_yn != "Y" or not next_key:
             break
+
+    if not rows and last_debug is not None:
+        visible = {
+            key: (f"list[{len(value)}]" if isinstance(value, list) else type(value).__name__)
+            for key, value in last_debug.items()
+            if key not in {"token", "authorization"}
+        }
+        print(
+            json.dumps(
+                {"debug_api": api_id, "expected_table_key": table_key, "response_shape": visible},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
 
     return rows
 
@@ -117,12 +144,13 @@ def find_sk_broker_code(session: requests.Session, base_url: str, token: str) ->
         path="/api/dostk/stkinfo",
         body={},
         table_key="list",
+        column_keys=["code", "name", "gb"],
     )
     if not rows:
-        raise RuntimeError("ka10102 returned no broker list")
+        raise RuntimeError("ka10102 returned no broker list after dict/list normalization")
 
-    exact = []
-    fuzzy = []
+    exact: list[tuple[str, str]] = []
+    fuzzy: list[tuple[str, str]] = []
     for row in rows:
         code = str(row.get("code", "")).strip()
         name = str(row.get("name", "")).strip()
@@ -134,7 +162,11 @@ def find_sk_broker_code(session: requests.Session, base_url: str, token: str) ->
 
     candidates = exact or fuzzy
     if not candidates:
-        raise RuntimeError("SK증권 member code not found in ka10102")
+        sample = [{"code": r.get("code"), "name": r.get("name"), "gb": r.get("gb")} for r in rows[:20]]
+        raise RuntimeError(
+            "SK증권 member code not found in ka10102. sample="
+            + json.dumps(sample, ensure_ascii=False)
+        )
     return candidates[0]
 
 
@@ -160,6 +192,17 @@ def fetch_broker_daily(
             "end_dt": end_date,
         },
         table_key="sec_stk_trde_trend",
+        column_keys=[
+            "dt",
+            "cur_prc",
+            "pre_sig",
+            "pred_pre",
+            "flu_rt",
+            "acc_trde_qty",
+            "netprps_qty",
+            "buy_qty",
+            "sell_qty",
+        ],
     )
     result: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -184,6 +227,38 @@ def fetch_daily_market(
         path="/api/dostk/stkinfo",
         body={"stk_cd": stock_code, "strt_dt": start_date},
         table_key="daly_trde_dtl",
+        column_keys=[
+            "dt",
+            "close_pric",
+            "pred_pre_sig",
+            "pred_pre",
+            "flu_rt",
+            "trde_qty",
+            "trde_prica",
+            "bf_mkrt_trde_qty",
+            "bf_mkrt_trde_wght",
+            "opmr_trde_qty",
+            "opmr_trde_wght",
+            "af_mkrt_trde_qty",
+            "af_mkrt_trde_wght",
+            "tot_3",
+            "prid_trde_qty",
+            "cntr_str",
+            "for_poss",
+            "for_wght",
+            "for_netprps",
+            "orgn_netprps",
+            "ind_netprps",
+            "frgn",
+            "crd_remn_rt",
+            "prm",
+            "bf_mkrt_trde_prica",
+            "bf_mkrt_trde_prica_wght",
+            "opmr_trde_prica",
+            "opmr_trde_prica_wght",
+            "af_mkrt_trde_prica",
+            "af_mkrt_trde_prica_wght",
+        ],
     )
     result: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -197,9 +272,6 @@ def infer_market_vwap(trading_value_raw: float, volume: float, reference_price: 
     if trading_value_raw <= 0 or volume <= 0:
         raise RuntimeError("Cannot infer VWAP from zero trading value/volume")
 
-    # Kiwoom fields can use scaled money units depending on TR. Infer the scale by
-    # selecting the candidate VWAP closest to that day's price. This avoids baking
-    # an undocumented/changed unit into the backfill logic.
     multipliers = (1.0, 100.0, 1_000.0, 10_000.0, 100_000.0, 1_000_000.0)
     candidates: list[tuple[float, float, float]] = []
     for multiplier in multipliers:
