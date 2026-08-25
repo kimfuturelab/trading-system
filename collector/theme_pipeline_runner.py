@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 KST = ZoneInfo("Asia/Seoul")
 HOME = Path.home()
 DEFAULT_LATEST = HOME / ".market-flow-top100-latest.json"
+DEFAULT_THEME_CACHE = HOME / ".market-flow-theme-cache.json"
 DEFAULT_INSTRUMENT_CACHE = HOME / ".market-flow-instrument-cache.json"
 DEFAULT_STATE = HOME / ".market-flow-theme-pipeline-state.json"
 DEFAULT_AUTH_ENV = HOME / "api-read-v2.env"
@@ -42,6 +43,20 @@ def latest_codes(latest: dict) -> set[str]:
         for r in rows
         if isinstance(r, dict) and str(r.get("stock_code") or "").strip()
     }
+
+
+def theme_cache_missing_codes(latest: dict, cache_path: Path) -> list[str]:
+    cache = load_json(cache_path, {})
+    stocks = cache.get("stocks") or {} if isinstance(cache, dict) else {}
+    if not isinstance(stocks, dict):
+        stocks = {}
+
+    missing = []
+    for code in sorted(latest_codes(latest)):
+        entry = stocks.get(code)
+        if not isinstance(entry, dict) or not isinstance(entry.get("themes"), list):
+            missing.append(code)
+    return missing
 
 
 def instrument_cache_covers(latest: dict, cache_path: Path) -> bool:
@@ -109,6 +124,7 @@ def gate_passed(summary: str) -> bool:
 
 def process_once(
     latest_path: Path,
+    theme_cache_path: Path,
     instrument_cache_path: Path,
     state_path: Path,
     auth_env: Path,
@@ -129,21 +145,34 @@ def process_once(
         return False
 
     state = load_json(state_path, {}) or {}
-    if not force and state.get("captured_at") == captured_at:
+    if (
+        not force
+        and state.get("captured_at") == captured_at
+        and state.get("status") == "OK"
+    ):
         return False
 
     status = "ERROR"
     detail = ""
     try:
-        mapper_cmd = [
-            sys.executable,
-            str(workdir / "theme_mapper.py"),
-            "--auth-env", str(auth_env),
-            "--latest-top100-file", str(latest_path),
-            "--sleep", "0.4",
-        ]
-        mapper_out = run_capture(mapper_cmd)
-        print(f"[THEME-MAPPER] captured_at={captured_at} {last_nonempty_line(mapper_out)}", flush=True)
+        missing_theme_codes = theme_cache_missing_codes(latest, theme_cache_path)
+        if not missing_theme_codes:
+            print("[THEME-MAPPER] cache coverage=100/100 -> skip API refresh", flush=True)
+        else:
+            print(
+                f"[THEME-MAPPER] missing={len(missing_theme_codes)} -> query only missing codes",
+                flush=True,
+            )
+            mapper_cmd = [
+                sys.executable,
+                str(workdir / "theme_mapper.py"),
+                "--auth-env", str(auth_env),
+                "--latest-top100-file", str(latest_path),
+                "--codes", ",".join(missing_theme_codes),
+                "--sleep", "0.4",
+            ]
+            mapper_out = run_capture(mapper_cmd, timeout=180)
+            print(f"[THEME-MAPPER] captured_at={captured_at} {last_nonempty_line(mapper_out)}", flush=True)
 
         if instrument_cache_covers(latest, instrument_cache_path):
             print("[THEME-CLASSIFIER] cache coverage=100/100 -> skip API refresh", flush=True)
@@ -215,6 +244,7 @@ def process_once(
 def main() -> int:
     parser = argparse.ArgumentParser(description="3.5단계 테마 자동 파이프라인 감시기")
     parser.add_argument("--latest-top100-file", default=str(DEFAULT_LATEST))
+    parser.add_argument("--theme-cache-file", default=str(DEFAULT_THEME_CACHE))
     parser.add_argument("--instrument-cache-file", default=str(DEFAULT_INSTRUMENT_CACHE))
     parser.add_argument("--state-file", default=str(DEFAULT_STATE))
     parser.add_argument("--auth-env", default=str(DEFAULT_AUTH_ENV))
@@ -230,6 +260,7 @@ def main() -> int:
         return 2
 
     latest_path = Path(args.latest_top100_file).expanduser()
+    theme_cache_path = Path(args.theme_cache_file).expanduser()
     instrument_cache_path = Path(args.instrument_cache_file).expanduser()
     state_path = Path(args.state_file).expanduser()
     auth_env = Path(args.auth_env).expanduser()
@@ -253,6 +284,7 @@ def main() -> int:
     while True:
         process_once(
             latest_path,
+            theme_cache_path,
             instrument_cache_path,
             state_path,
             auth_env,
