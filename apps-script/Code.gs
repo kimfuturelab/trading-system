@@ -393,11 +393,15 @@ function loadSnapshotHistory_(sheet) {
     return { byTheme, existingKeys };
   }
 
-  const values = sheet.getRange(2, 1, lastRow - 1, 16).getValues();
-  values.forEach(r => {
-    const date = String(r[0] || '').trim();
-    const time = String(r[1] || '').trim();
-    const theme = String(r[2] || '').trim();
+  const range = sheet.getRange(2, 1, lastRow - 1, 16);
+  const values = range.getValues();
+  const displayValues = range.getDisplayValues();
+
+  values.forEach((r, i) => {
+    const display = displayValues[i] || [];
+    const date = String(display[0] || '').trim();
+    const time = String(display[1] || '').trim();
+    const theme = String(display[2] || r[2] || '').trim();
     if (!date || !time || !theme) return;
 
     const parsed = parseCapturedAt_(`${date} ${time}`);
