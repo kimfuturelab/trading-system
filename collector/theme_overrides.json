@@ -1,7 +1,7 @@
 {
   "version": 1,
   "policy": "Use only when Kiwoom ka90001 stock theme list is empty and aggregation_policy is INCLUDE. Never override Kiwoom official themes.",
-  "reviewed_at": "2026-08-25",
+  "reviewed_at": "2026-08-26",
   "overrides": {
     "402340": {"stock_name": "SK스퀘어", "theme_code": "S001", "theme_name": "IT/반도체 지주", "confidence": "MEDIUM"},
     "008930": {"stock_name": "한미사이언스", "theme_code": "S002", "theme_name": "바이오/제약 지주", "confidence": "MEDIUM"},
@@ -39,6 +39,13 @@
     "307950": {"stock_name": "현대오토에버", "theme_code": "459", "theme_name": "소프트웨어_자동차용", "confidence": "HIGH"},
     "267260": {"stock_name": "HD현대일렉트릭", "theme_code": "S008", "theme_name": "전력기기", "confidence": "HIGH"},
     "019170": {"stock_name": "신풍제약", "theme_code": "S013", "theme_name": "제약", "confidence": "MEDIUM"},
-    "388050": {"stock_name": "지투파워", "theme_code": "S008", "theme_name": "전력기기", "confidence": "MEDIUM"}
+    "388050": {"stock_name": "지투파워", "theme_code": "S008", "theme_name": "전력기기", "confidence": "MEDIUM"},
+    "361610": {"stock_name": "SK아이이테크놀로지", "theme_code": "141", "theme_name": "2차전지_소재(양극화물질등)", "confidence": "MEDIUM"},
+    "214450": {"stock_name": "파마리서치", "theme_code": "S014", "theme_name": "의료미용/에스테틱", "confidence": "HIGH"},
+    "079900": {"stock_name": "전진건설로봇", "theme_code": "S015", "theme_name": "건설기계", "confidence": "HIGH"},
+    "130660": {"stock_name": "한전산업", "theme_code": "S016", "theme_name": "발전설비/O&M", "confidence": "MEDIUM"},
+    "336260": {"stock_name": "두산퓨얼셀", "theme_code": "S017", "theme_name": "수소/연료전지", "confidence": "HIGH"},
+    "326030": {"stock_name": "SK바이오팜", "theme_code": "370", "theme_name": "신약개발/기술수출", "confidence": "HIGH"},
+    "207940": {"stock_name": "삼성바이오로직스", "theme_code": "S018", "theme_name": "바이오/CDMO", "confidence": "HIGH"}
   }
 }
