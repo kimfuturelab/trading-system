@@ -137,6 +137,9 @@ def build_stock_rows(latest: dict, theme_cache: dict, instrument_cache: dict, ov
                     themes = [{"theme_code": o_code, "theme_name": o_name}]
                     source = "SUPPLEMENTAL"
 
+        if not themes and policy == "INCLUDE":
+            source = "UNCLASSIFIED"
+
         result.append({
             "rank": int(num(raw.get("rank"), 9999)),
             "stock_code": code,
@@ -153,11 +156,12 @@ def build_stock_rows(latest: dict, theme_cache: dict, instrument_cache: dict, ov
 
 
 def choose_representatives(stocks: list[dict]) -> list[dict]:
-    eligible = [r for r in stocks if r["aggregation_policy"] == "INCLUDE"]
-    missing = [r for r in eligible if not r["themes"]]
-    if missing:
-        text = ", ".join(f"{r['stock_code']} {r['stock_name']}" for r in missing[:20])
-        raise RuntimeError(f"INCLUDE인데 테마가 없는 종목 존재: {text}")
+    # Fail-soft: INCLUDE이지만 테마가 아직 없는 종목은 대표테마 선정에서 제외한다.
+    # 이 종목의 거래대금은 aggregate_themes() diagnostics의 unclassified_*로 별도 추적한다.
+    eligible = [
+        r for r in stocks
+        if r["aggregation_policy"] == "INCLUDE" and r["themes"]
+    ]
 
     # 복수테마 대표선정용 보조 강도. 최종 집계가 아니라 선택에만 사용한다.
     # 한 종목이 여러 후보에 속해도 여기서는 후보별 '동료 존재감'을 보기 위해 모두 더한다.
@@ -202,9 +206,12 @@ def choose_representatives(stocks: list[dict]) -> list[dict]:
 
 def aggregate_themes(stocks: list[dict], representatives: list[dict]) -> tuple[list[dict], dict]:
     raw_total = sum(r["trading_value_eok"] for r in stocks)
-    eligible_total = sum(r["trading_value_eok"] for r in stocks if r["aggregation_policy"] == "INCLUDE")
+    eligible_rows = [r for r in stocks if r["aggregation_policy"] == "INCLUDE"]
+    eligible_total = sum(r["trading_value_eok"] for r in eligible_rows)
     excluded_total = sum(r["trading_value_eok"] for r in stocks if r["aggregation_policy"] == "EXCLUDE")
     review_total = sum(r["trading_value_eok"] for r in stocks if r["aggregation_policy"] == "REVIEW")
+    unclassified_rows = [r for r in eligible_rows if not r["themes"]]
+    unclassified_total = sum(r["trading_value_eok"] for r in unclassified_rows)
 
     buckets = {}
     for rep in representatives:
@@ -263,10 +270,23 @@ def aggregate_themes(stocks: list[dict], representatives: list[dict]) -> tuple[l
         "excluded_total_eok": round(excluded_total, 2),
         "review_total_eok": round(review_total, 2),
         "assigned_total_eok": round(assigned_total, 2),
+        "unclassified_total_eok": round(unclassified_total, 2),
+        "unclassified_share_top100_pct": round((unclassified_total / raw_total * 100.0) if raw_total else 0.0, 4),
+        "unclassified_share_eligible_pct": round((unclassified_total / eligible_total * 100.0) if eligible_total else 0.0, 4),
         "coverage_eligible_pct": round((assigned_total / eligible_total * 100.0) if eligible_total else 0.0, 4),
         "top100_count": len(stocks),
-        "eligible_stock_count": sum(1 for r in stocks if r["aggregation_policy"] == "INCLUDE"),
+        "eligible_stock_count": len(eligible_rows),
         "excluded_stock_count": sum(1 for r in stocks if r["aggregation_policy"] == "EXCLUDE"),
+        "unclassified_stock_count": len(unclassified_rows),
+        "unclassified_stocks": [
+            {
+                "rank": r["rank"],
+                "stock_code": r["stock_code"],
+                "stock_name": r["stock_name"],
+                "trading_value_eok": round(r["trading_value_eok"], 2),
+            }
+            for r in unclassified_rows
+        ],
         "representative_count": len(representatives),
         "theme_count": len(rows),
     }
@@ -323,9 +343,9 @@ def main() -> int:
         theme_rows, diagnostics = aggregate_themes(stocks, representatives)
         captured_at = str(latest.get("captured_at") or datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"))
         payload = {
-            "version": 1,
+            "version": 2,
             "type": "theme_aggregate",
-            "source": "representative-theme-v1",
+            "source": "representative-theme-v1-fail-soft",
             "captured_at": captured_at,
             "selection_rule": SELECTION_RULE,
             "diagnostics": diagnostics,
@@ -341,9 +361,21 @@ def main() -> int:
         print(f"excluded_total_eok={diagnostics['excluded_total_eok']}")
         print(f"eligible_stock_count={diagnostics['eligible_stock_count']}")
         print(f"representative_count={diagnostics['representative_count']}")
+        print(f"unclassified_stock_count={diagnostics['unclassified_stock_count']}")
+        print(f"unclassified_total_eok={diagnostics['unclassified_total_eok']}")
+        print(f"unclassified_share_top100_pct={diagnostics['unclassified_share_top100_pct']}")
         print(f"theme_count={diagnostics['theme_count']}")
         print(f"coverage_eligible_pct={diagnostics['coverage_eligible_pct']}")
         print(f"selection_rule={SELECTION_RULE}")
+
+        if diagnostics["unclassified_stock_count"]:
+            print()
+            print("===== UNCLASSIFIED INCLUDE STOCKS =====")
+            for r in diagnostics["unclassified_stocks"]:
+                print(
+                    f"{r['rank']:>3} {r['stock_code']} {r['stock_name']} "
+                    f"amount_eok={r['trading_value_eok']:.2f}"
+                )
 
         multi = [r for r in representatives if r["candidate_count"] > 1]
         print()
