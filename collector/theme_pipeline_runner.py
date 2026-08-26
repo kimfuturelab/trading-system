@@ -113,10 +113,13 @@ def last_nonempty_line(text: str) -> str:
 
 
 def gate_passed(summary: str) -> bool:
+    # Fail-soft policy:
+    # - cache missing / instrument REVIEW / UNKNOWN type are structural errors -> stop.
+    # - theme_enrichment > 0 means only that some INCLUDE stocks have no theme yet.
+    #   Those stocks are tracked as UNCLASSIFIED by the aggregator and must NOT stop the pipeline.
     required = (
         "cache_missing=0",
         "review=0",
-        "theme_enrichment=0",
         "unknown_type=0",
     )
     return bool(summary) and all(token in summary for token in required)
@@ -201,8 +204,14 @@ def process_once(
         if not gate_passed(summary):
             status = "GATE_FAILED"
             detail = summary or "summary missing"
-            print(f"[THEME-STOP] gate failed captured_at={captured_at}", flush=True)
+            print(f"[THEME-STOP] structural gate failed captured_at={captured_at}", flush=True)
             return False
+
+        if "theme_enrichment=0" not in summary:
+            print(
+                f"[THEME-WARN] unclassified INCLUDE stocks exist; continue fail-soft captured_at={captured_at}",
+                flush=True,
+            )
 
         map_cmd = [
             sys.executable,
