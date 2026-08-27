@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>자사주 추격자 V1 | SK하이닉스</title>
+<meta name="description" content="SK하이닉스 자사주 신청수량과 지정 중개사 SK증권의 장중 매수 흐름을 이용해 잔여수량, 매수속도, 예상 소진시각을 보여주는 장중 추정 대시보드.">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <div class="brand"><span class="dot"></span>자사주 추격자 <span class="v">V1</span></div>
+    <div class="tabs"><button class="tab on" type="button">실시간</button></div>
+  </div>
+
+  <div class="head">
+    <div>
+      <h1>SK하이닉스 <span>000660</span></h1>
+      <p>자사주 매입 진행 상황 · 지정 중개사 창구 흐름 기반 추정</p>
+    </div>
+    <div class="live-wrap">
+      <div id="liveState" class="live">● 연결 중</div>
+      <div id="liveTime" class="time">실시간 데이터 확인 중</div>
+    </div>
+  </div>
+
+  <section class="card status">
+    <div class="status-top">
+      <div>
+        <div class="eyebrow">현재 자사주 매입 여력</div>
+        <div id="signal" class="state wait">WAIT</div>
+        <div id="signalDesc" class="desc">실시간 데이터를 불러오고 있습니다.</div>
+      </div>
+      <div id="rankBadge" class="rank neutral">SK증권 확인 중</div>
+    </div>
+    <div class="gauge">
+      <svg viewBox="0 0 420 235" aria-hidden="true">
+        <path d="M55 205 A155 155 0 0 1 365 205" fill="none" stroke="#eef0f3" stroke-width="36" stroke-linecap="round"/>
+        <path d="M55 205 A155 155 0 0 1 118 82" fill="none" stroke="#ef4444" stroke-width="36" stroke-linecap="round"/>
+        <path d="M118 82 A155 155 0 0 1 244 53" fill="none" stroke="#eab308" stroke-width="36"/>
+        <path d="M244 53 A155 155 0 0 1 365 205" fill="none" stroke="#22c55e" stroke-width="36" stroke-linecap="round"/>
+        <line id="needle" x1="210" y1="205" x2="210" y2="58" stroke="#111827" stroke-width="7" stroke-linecap="round"/>
+        <circle cx="210" cy="205" r="17" fill="#111827"/><circle cx="210" cy="205" r="8" fill="#fff"/>
+      </svg>
+      <div class="center"><b id="remainingRate">-</b><span>잔여율</span></div>
+      <div class="scale"><span class="r">RED<br>소진</span><span class="y">YELLOW<br>주의</span><span class="g">GREEN<br>여유</span></div>
+    </div>
+    <div class="prow"><span>오늘 매입 진행률</span><span id="progressText">-</span></div>
+    <div class="bar"><i id="progressBar"></i></div>
+  </section>
+
+  <section class="card side">
+    <div class="price-grid">
+      <div>
+        <div class="price-label">현재가</div>
+        <div id="price" class="price">-</div>
+        <div id="changePct" class="chg flat">-</div>
+        <div id="prevClose" class="prev">전일 종가 -</div>
+      </div>
+      <div id="updatePanel" class="update-panel pending">
+        <span>최종 업데이트</span>
+        <b id="updateTime">확인 중</b>
+        <small id="updateDate">30초 자동 갱신</small>
+      </div>
+    </div>
+    <div class="stats">
+      <div class="m"><label>오늘 신청수량</label><b id="applicationQty">-</b><small>KRX KIND 기준</small></div>
+      <div class="m"><label>SK증권 누적매수 (추정)</label><b id="skQty">-</b><small id="rankText">현재 매수순위 확인 중</small></div>
+      <div class="m"><label>잔여 추정수량</label><b id="remainingQty">-</b><small id="remainingRateSmall">잔여율 -</small></div>
+      <div class="m"><label>예상 소진시각</label><b id="depletionTime">-</b><small>현재 평균속도 유지 가정</small></div>
+      <div class="m"><label>시장 전체 누적거래량</label><b id="marketVolume">-</b><small>자사주 추정치와 별개</small></div>
+      <div class="m"><label>SK증권 / 시장 거래량</label><b id="marketShare">-</b><small>창구 누적매수 ÷ 시장 거래량</small></div>
+    </div>
+  </section>
+
+  <div class="speed">
+    <div class="s"><label>평균 매수속도</label><b id="avgSpeed">-</b><small>주 / 분</small></div>
+    <div class="s"><label>최근 매수속도</label><b id="recentSpeed">-</b><small>주 / 분</small></div>
+    <div class="s"><label>정상 대비 속도</label><b id="paceMultiple">-</b><small>균등 필요속도 대비</small></div>
+    <div class="s"><label>최근 가속도</label><b id="acceleration">-</b><small>평균속도 대비</small></div>
+    <div class="s"><label>종료까지 필요속도</label><b id="neededSpeed">-</b><small>주 / 분</small></div>
+    <div class="s"><label>경과시간</label><b id="elapsedMin">-</b><small>09:00 기준</small></div>
+  </div>
+
+  <section class="card chart-card">
+    <div class="chart-head">
+      <div><h2>SK증권 창구 누적매수 흐름</h2><p>5위 밖에서는 마지막 확인 누적값을 유지하고, 재포착 시 최신값으로 이어집니다.</p></div>
+      <div class="legend">● SK증권 누적매수　- - 오늘 신청수량</div>
+    </div>
+    <div class="chart"><svg id="trend" viewBox="0 0 1100 280" preserveAspectRatio="none"></svg></div>
+    <div class="note">※ SK증권 창구 누적매수에는 일반 고객 주문이 포함될 수 있어 공식 자사주 체결량과 다를 수 있습니다.</div>
+  </section>
+
+  <div class="bottom">
+    <section class="card decision">
+      <h3>현재 판단</h3>
+      <div id="decisionBox" class="box neutral">
+        <div><b id="decisionTitle">데이터 확인 중</b><p id="decisionDesc">실시간 원본과 연결 중입니다.</p></div>
+        <div id="decisionChip" class="chip">대기</div>
+      </div>
+      <div class="warn">공식 자사주 체결량이 아니라 지정 중개사 거래원 흐름을 이용한 장중 추정 도구입니다. 매매 판단은 가격·수급·시장 상황과 함께 확인하세요.</div>
+    </section>
+    <section class="card history">
+      <h3>오늘 핵심 흐름</h3>
+      <div class="hr"><span>SK증권 최초 상위 5위 포착</span><b id="firstSeen">-</b></div>
+      <div class="hr"><span>현재 포착 상태</span><b id="currentRank">-</b></div>
+      <div class="hr"><span>현재 누적매수 추정</span><b id="currentSkQty">-</b></div>
+      <div class="hr"><span>신청수량 최초 통과</span><b id="crossing">-</b></div>
+    </section>
+  </div>
+</div>
+<script src="/app.js" defer></script>
+</body>
+</html>
