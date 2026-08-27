@@ -1,5 +1,5 @@
 const REFRESH_MS = 30_000;
-const API_URL = '/api/live';
+const PUBLIC_API_URL = 'https://script.google.com/macros/s/AKfycbznUeW68apO8MM2AEX_T_PZ2FfwrPGfojUIgDSDRXz-YRIzTbGbOUhb30BzUxue90qHQA/exec';
 const $ = id => document.getElementById(id);
 const fmtInt = v => Number.isFinite(Number(v)) ? Math.round(Number(v)).toLocaleString('ko-KR') : '-';
 const fmtQty = v => Number.isFinite(Number(v)) ? `${fmtInt(v)}주` : '-';
@@ -82,14 +82,12 @@ function render(data){
   $('rankBadge').className=`rank ${rank?'':'neutral'}`;
   $('rankText').textContent=rank?`현재 매수순위 ${rank}위`:'현재 상위5 미포착';
   $('currentRank').textContent=rank?`매수 ${rank}위`:'상위5 미포착';
-
   $('remainingRate').textContent=fmtPct(data.remainingRate);
   $('remainingRateSmall').textContent=`잔여율 ${fmtPct(data.remainingRate)}`;
   setNeedle(data.remainingRate);
   const progress=Math.max(0,Math.min(1,Number(data.progress)||0));
   $('progressText').textContent=fmtPct(progress);
   $('progressBar').style.width=`${(progress*100).toFixed(1)}%`;
-
   $('price').textContent=fmtPrice(data.price);
   const cp=pctValue(data.changePct);
   $('changePct').textContent=fmtPctSigned(data.changePct);
@@ -108,7 +106,6 @@ function render(data){
   $('acceleration').textContent=fmtX(data.acceleration);
   $('neededSpeed').textContent=fmtInt(data.neededSpeed);
   $('elapsedMin').textContent=Number.isFinite(Number(data.elapsedMin))?`${fmtInt(data.elapsedMin)}분`:'-';
-
   const apiTime=safeTime(data.apiTime);
   const date=String(data.date||'').replace(/\./g,'-');
   $('liveState').textContent='● LIVE'; $('liveState').className='live';
@@ -116,7 +113,6 @@ function render(data){
   $('updatePanel').className='update-panel';
   $('updateTime').textContent=apiTime;
   $('updateDate').textContent=`${date} · 30초 자동 갱신`;
-
   $('firstSeen').textContent=data.firstSeenTime?`${safeTime(data.firstSeenTime)} · ${fmtQty(data.firstSeenQty)}`:'아직 미포착';
   const crossed=String(data.crossingStatus||'').includes('통과') && !String(data.crossingStatus||'').includes('미통과');
   $('crossing').textContent=crossed?`${safeTime(data.crossingTime)} · 통과`:'미통과';
@@ -133,14 +129,26 @@ function showError(error){
   $('updateDate').textContent=detail;
 }
 
-async function load(){
-  try{
-    const res=await fetch(`${API_URL}?t=${Date.now()}`,{cache:'no-store'});
-    const text=await res.text();
-    if(!res.ok) throw new Error(`http_${res.status}`);
-    let data; try{data=JSON.parse(text);}catch{throw new Error('invalid_json');}
-    render(data);
-  }catch(err){console.error('[hynix-live]',err);showError(err);}
+function load(){
+  const callbackName=`__hynixLive_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const script=document.createElement('script');
+  let done=false;
+  const cleanup=()=>{
+    if(done) return;
+    done=true;
+    clearTimeout(timer);
+    try{ delete window[callbackName]; }catch{}
+    script.remove();
+  };
+  window[callbackName]=(data)=>{
+    cleanup();
+    try{ render(data); }catch(err){ console.error('[hynix-live-render]',err); showError(err); }
+  };
+  script.onerror=()=>{ cleanup(); showError(new Error('jsonp_load_error')); };
+  script.src=`${PUBLIC_API_URL}?callback=${encodeURIComponent(callbackName)}&_=${Date.now()}`;
+  script.async=true;
+  const timer=setTimeout(()=>{ cleanup(); showError(new Error('jsonp_timeout')); },9000);
+  document.head.appendChild(script);
 }
 load();
 setInterval(load,REFRESH_MS);
