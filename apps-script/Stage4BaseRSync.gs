@@ -5,7 +5,8 @@ const STAGE4_RSYNC_SOURCE_SHEET = '4단계연동';
 /**
  * 2단계가 확정한 Base R을 4단계 당일 빠른계산 B7에 그대로 기록한다.
  * - 3단계 등급을 R로 재해석하지 않는다.
- * - 3.5/4단계가 R을 상향하지 않는다.
+ * - 3단계·3.5단계는 Base R을 상향하지 않는다.
+ * - 4단계의 사전 정의 Exception Multiplier / Final R 규칙은 기존 수식이 별도로 처리한다.
  * - 소스 날짜/상태/R이 이상하면 B7을 비워 Fail Closed한다.
  * - 과거 일일탭은 절대 수정하지 않고 '오늘 탭'만 갱신한다.
  */
@@ -64,13 +65,8 @@ function syncStage2BaseRToStage4() {
 
   b7.setValue(canonicalR);
   b7.setNote(
-    `AUTO | Source of Truth=2단계 | Base R=${canonicalR} | ${Utilities.formatDate(now, tz, 'yyyy-MM-dd HH:mm:ss')}`
+    `AUTO | Source of Truth=2단계 | Base R=${canonicalR} | 4단계 예외배수는 기존 규칙이 별도 계산 | ${Utilities.formatDate(now, tz, 'yyyy-MM-dd HH:mm:ss')}`
   );
-
-  // 최신 정책: Exception Multiplier 폐기, Final R = Base R.
-  target.getRange('M14').setValue('BASE_R_ONLY');
-  target.getRange('Q14').setValue(1);
-  target.getRange('U14').setValue(canonicalR);
 
   SpreadsheetApp.flush();
 
@@ -79,7 +75,8 @@ function syncStage2BaseRToStage4() {
     date: todayYmd,
     sheet: targetName,
     base_r: canonicalR,
-    final_r: canonicalR
+    exception_multiplier: target.getRange('Q14').getDisplayValue(),
+    final_r: target.getRange('U14').getDisplayValue()
   };
 }
 
