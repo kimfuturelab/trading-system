@@ -17,6 +17,8 @@ DEFAULT_PROJECT_ENV = Path.home() / "market-flow.env"
 DEFAULT_THEME_MASTER = Path.home() / ".market-flow-theme-master.json"
 DEFAULT_OVERRIDE_FILE = Path.home() / "market-flow" / "theme_overrides.json"
 DEFAULT_OUTPUT_FILE = Path.home() / ".market-flow-calendar-backfill.json"
+DEFAULT_MARCAP_CACHE = Path.home() / ".cache" / "market-flow" / "marcap-2026.parquet"
+MARCAP_URL_TEMPLATE = "https://raw.githubusercontent.com/FinanceData/marcap/master/data/marcap-{year}.parquet"
 SELECTION_RULE = "peer-top100-trading-value-ex-self-v1"
 CALENDAR_STATUS = "과거복원"
 
@@ -107,58 +109,104 @@ def build_theme_index(theme_master: dict, overrides: dict) -> dict[str, list[dic
     return index
 
 
-def import_pykrx():
+def import_pandas():
     try:
-        from pykrx import stock  # type: ignore
+        import pandas as pd  # type: ignore
     except Exception as exc:
         raise RuntimeError(
-            "pykrx가 필요합니다. 별도 백필 환경에 `pip install -r collector/requirements-backfill.txt`를 실행하세요."
+            "pandas/pyarrow가 필요합니다. `pip install -r collector/requirements-backfill.txt`를 실행하세요."
         ) from exc
-    return stock
+    return pd
 
 
-def fetch_day_universe(stock, yyyymmdd: str) -> list[dict]:
-    market_df = stock.get_market_ohlcv_by_ticker(
-        yyyymmdd,
-        market="ALL",
-        alternative=False,
-    )
-    if market_df is None or market_df.empty:
+def ensure_marcap_file(year: int, cache_path: Path) -> Path:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if cache_path.exists() and cache_path.stat().st_size > 100_000:
+        return cache_path
+
+    url = MARCAP_URL_TEMPLATE.format(year=year)
+    print(f"[DOWNLOAD] {url}", flush=True)
+    req = Request(url, headers={"User-Agent": "market-flow-backfill/1.0"})
+    tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    try:
+        with urlopen(req, timeout=120) as resp, tmp.open("wb") as out:
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+    except HTTPError as exc:
+        raise RuntimeError(f"marcap 다운로드 HTTP {exc.code}: {url}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"marcap 다운로드 실패: {exc.reason}") from exc
+
+    if not tmp.exists() or tmp.stat().st_size < 100_000:
+        raise RuntimeError("marcap 파일 다운로드 결과가 비정상적으로 작습니다.")
+    tmp.replace(cache_path)
+    return cache_path
+
+
+def load_marcap_period(pd, parquet_path: Path, from_date: str, to_date: str):
+    df = pd.read_parquet(parquet_path)
+    required = {"Date", "Code", "Name", "Close", "Volume", "Amount"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise RuntimeError("marcap 필수 컬럼 누락: " + ", ".join(missing))
+
+    dates = pd.to_datetime(df["Date"], errors="coerce")
+    start = pd.Timestamp(datetime.strptime(from_date, "%Y%m%d").date())
+    end = pd.Timestamp(datetime.strptime(to_date, "%Y%m%d").date())
+    filtered = df.loc[(dates >= start) & (dates <= end)].copy()
+    filtered["Date"] = pd.to_datetime(filtered["Date"], errors="coerce")
+    filtered["Code"] = filtered["Code"].astype(str).str.zfill(6)
+    filtered["Name"] = filtered["Name"].astype(str)
+    filtered["Amount"] = pd.to_numeric(filtered["Amount"], errors="coerce").fillna(0)
+    filtered["Close"] = pd.to_numeric(filtered["Close"], errors="coerce").fillna(0)
+    if "ChagesRatio" in filtered.columns:
+        filtered["_change_rate"] = pd.to_numeric(
+            filtered["ChagesRatio"], errors="coerce"
+        ).fillna(0)
+    elif "ChangesRatio" in filtered.columns:
+        filtered["_change_rate"] = pd.to_numeric(
+            filtered["ChangesRatio"], errors="coerce"
+        ).fillna(0)
+    else:
+        filtered["_change_rate"] = 0.0
+    return filtered
+
+
+def looks_like_excluded_security(name: str) -> bool:
+    text = str(name or "").strip().upper()
+    if not text:
+        return False
+    # marcap은 주식 중심 데이터지만 우선주/스팩 등이 섞일 수 있어
+    # 실시간 집계의 EXCLUDE 정책과 최대한 맞춘다.
+    preferred_tokens = ("우", "우B", "우C", "1우", "2우", "3우")
+    if any(text.endswith(token.upper()) for token in preferred_tokens):
+        return True
+    if "스팩" in text or "SPAC" in text:
+        return True
+    return False
+
+
+def fetch_day_universe(day_df) -> list[dict]:
+    if day_df is None or day_df.empty:
         return []
 
     rows: list[dict] = []
-    for ticker, row in market_df.iterrows():
-        code = canonical_code(ticker)
-        amount = num(row.get("거래대금"))
+    for _, row in day_df.iterrows():
+        code = canonical_code(row.get("Code"))
+        name = str(row.get("Name") or "").strip()
+        amount = num(row.get("Amount"))
         if not code or amount <= 0:
             continue
         rows.append({
             "stock_code": code,
-            "security_type": "STOCK",
+            "stock_name": name,
+            "security_type": "EXCLUDE" if looks_like_excluded_security(name) else "STOCK",
             "trading_value_raw": amount,
-            "change_rate_pct": num(row.get("등락률")),
+            "change_rate_pct": num(row.get("_change_rate")),
         })
-
-    # 실시간 ka10032 TOP100의 분모에는 ETF도 들어오므로 역사 복원도
-    # ETF는 분모에 포함하되 테마 집계에서는 제외한다.
-    try:
-        etf_df = stock.get_etf_ohlcv_by_ticker(yyyymmdd)
-    except Exception:
-        etf_df = None
-
-    if etf_df is not None and not etf_df.empty:
-        existing = {r["stock_code"] for r in rows}
-        for ticker, row in etf_df.iterrows():
-            code = canonical_code(ticker)
-            amount = num(row.get("거래대금"))
-            if not code or code in existing or amount <= 0:
-                continue
-            rows.append({
-                "stock_code": code,
-                "security_type": "ETF",
-                "trading_value_raw": amount,
-                "change_rate_pct": 0.0,
-            })
 
     rows.sort(key=lambda r: (-r["trading_value_raw"], r["stock_code"]))
     top100 = rows[:100]
@@ -210,6 +258,7 @@ def choose_representatives(
         reps.append({
             "rank": row["rank"],
             "stock_code": row["stock_code"],
+            "stock_name": row["stock_name"],
             "trading_value_eok": row["trading_value_eok"],
             "change_rate_pct": row["change_rate_pct"],
             "theme_code": chosen["theme_code"],
@@ -234,6 +283,7 @@ def aggregate_themes(top100: list[dict], reps: list[dict]) -> list[dict]:
                 "stock_count": 0,
                 "weighted_change_numer": 0.0,
                 "leader_stock_code": "",
+                "leader_stock_name": "",
                 "leader_trading_value_eok": -1.0,
             }
         b = buckets[code]
@@ -246,6 +296,7 @@ def aggregate_themes(top100: list[dict], reps: list[dict]) -> list[dict]:
         if amount > b["leader_trading_value_eok"]:
             b["leader_trading_value_eok"] = amount
             b["leader_stock_code"] = rep["stock_code"]
+            b["leader_stock_name"] = rep["stock_name"]
 
     rows = []
     for b in buckets.values():
@@ -265,9 +316,9 @@ def aggregate_themes(top100: list[dict], reps: list[dict]) -> list[dict]:
                 4,
             ),
             "leader_stock_code": b["leader_stock_code"],
+            "leader_stock_name": b["leader_stock_name"],
             "leader_trading_value_eok": round(
-                max(0.0, b["leader_trading_value_eok"]),
-                2,
+                max(0.0, b["leader_trading_value_eok"]), 2
             ),
         })
 
@@ -289,25 +340,10 @@ def classify_market_weight(top1_share: float, gap: float) -> str:
     return "강한 우세"
 
 
-def resolve_ticker_name(stock, ticker: str, cache: dict[str, str]) -> str:
-    if not ticker:
-        return ""
-    if ticker in cache:
-        return cache[ticker]
-    try:
-        name = str(stock.get_market_ticker_name(ticker) or "").strip()
-    except Exception:
-        name = ""
-    cache[ticker] = name
-    return name
-
-
 def day_to_calendar_row(
-    stock,
     yyyymmdd: str,
     top100: list[dict],
     theme_index: dict[str, list[dict]],
-    name_cache: dict[str, str],
 ) -> dict | None:
     reps, unclassified = choose_representatives(top100, theme_index)
     themes = aggregate_themes(top100, reps)
@@ -318,8 +354,6 @@ def day_to_calendar_row(
     second = themes[1] if len(themes) > 1 else None
     second_share = num(second.get("share_top100_pct")) if second else 0.0
     gap = num(first.get("share_top100_pct")) - second_share
-    leader_code = str(first.get("leader_stock_code") or "")
-    leader_name = resolve_ticker_name(stock, leader_code, name_cache) or leader_code
 
     raw_total = sum(r["trading_value_eok"] for r in top100)
     unclassified_total = sum(r["trading_value_eok"] for r in unclassified)
@@ -335,22 +369,20 @@ def day_to_calendar_row(
         "close_top1_share_pct": round(num(first["share_top100_pct"]), 2),
         "close_top2_theme": second["theme_name"] if second else "",
         "top1_top2_gap_pp": round(gap, 2),
-        "market_weight": classify_market_weight(
-            num(first["share_top100_pct"]),
-            gap,
-        ),
+        "market_weight": classify_market_weight(num(first["share_top100_pct"]), gap),
         "intraday_representative_theme": "",
         "intraday_max_share_pct": "",
         "lead_switch_count": "",
         "close_lifecycle": "",
         "lead_duration_minutes": "",
         "major_money_move": "",
-        "leader_stock": leader_name,
+        "leader_stock": first.get("leader_stock_name") or first.get("leader_stock_code") or "",
         "market_money_state": "",
         "record_status": CALENDAR_STATUS,
         "note": (
-            "KRX 일별 전종목 거래대금+ETF로 TOP100 재구성 / "
+            "FinanceData/marcap 일별 전종목 Amount로 TOP100 재구성 / "
             "현재 키움 테마 마스터로 대표테마 재선정 / "
+            "ETF·ETN은 marcap 모집단에 없어 실시간 ka10032 대비 점유율 오차 가능 / "
             "장중 최고점유율·교체횟수·지속시간은 과거복원 불가"
         ),
         "diagnostics": {
@@ -359,8 +391,7 @@ def day_to_calendar_row(
             "classified_stock_count": len(reps),
             "unclassified_stock_count": len(unclassified),
             "unclassified_share_top100_pct": round(
-                (unclassified_total / raw_total * 100.0) if raw_total else 0.0,
-                4,
+                (unclassified_total / raw_total * 100.0) if raw_total else 0.0, 4
             ),
             "excluded_security_count": excluded_count,
             "theme_count": len(themes),
@@ -378,7 +409,7 @@ def post_webhook(rows: list[dict]) -> dict:
     payload = {
         "secret": secret,
         "type": "calendar_backfill",
-        "source": "pykrx-krx-daily-top100-reconstruction",
+        "source": "financedata-marcap-daily-top100-reconstruction",
         "generated_at": datetime.now(KST).isoformat(timespec="seconds"),
         "rows": rows,
     }
@@ -406,15 +437,14 @@ def post_webhook(rows: list[dict]) -> dict:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="3.5단계 주도테마 캘린더 과거 일별 백필"
-    )
+    p = argparse.ArgumentParser(description="3.5단계 주도테마 캘린더 과거 일별 백필")
     p.add_argument("--from-date", required=True, help="YYYYMMDD")
     p.add_argument("--to-date", required=True, help="YYYYMMDD")
     p.add_argument("--theme-master", default=str(DEFAULT_THEME_MASTER))
     p.add_argument("--overrides", default=str(DEFAULT_OVERRIDE_FILE))
     p.add_argument("--project-env", default=str(DEFAULT_PROJECT_ENV))
     p.add_argument("--output", default=str(DEFAULT_OUTPUT_FILE))
+    p.add_argument("--marcap-cache", default=str(DEFAULT_MARCAP_CACHE))
     p.add_argument("--post", action="store_true", help="Apps Script webhook으로 전송")
     return p.parse_args()
 
@@ -423,39 +453,32 @@ def main() -> int:
     args = parse_args()
     if args.from_date > args.to_date:
         raise RuntimeError("from-date가 to-date보다 늦습니다.")
+    if args.from_date[:4] != args.to_date[:4]:
+        raise RuntimeError("현재 백필은 같은 연도 범위만 지원합니다.")
 
-    stock = import_pykrx()
+    pd = import_pandas()
+    year = int(args.from_date[:4])
+    parquet_path = ensure_marcap_file(year, Path(args.marcap_cache).expanduser())
+    period_df = load_marcap_period(pd, parquet_path, args.from_date, args.to_date)
+    if period_df.empty:
+        raise RuntimeError("marcap 기간 데이터가 비어 있습니다.")
+
     theme_master = load_json(Path(args.theme_master).expanduser())
     overrides_path = Path(args.overrides).expanduser()
-    overrides = (
-        load_json(overrides_path)
-        if overrides_path.exists()
-        else {"overrides": {}}
-    )
+    overrides = load_json(overrides_path) if overrides_path.exists() else {"overrides": {}}
     theme_index = build_theme_index(theme_master, overrides)
     if not theme_index:
         raise RuntimeError("사용 가능한 테마 역인덱스가 없습니다.")
 
-    name_cache: dict[str, str] = {}
-    business_days = stock.get_previous_business_days(
-        fromdate=args.from_date,
-        todate=args.to_date,
-    )
     rows = []
-    for value in business_days:
-        yyyymmdd = value.strftime("%Y%m%d")
+    grouped = period_df.groupby(period_df["Date"].dt.strftime("%Y%m%d"), sort=True)
+    for yyyymmdd, day_df in grouped:
         print(f"[BACKFILL] {yyyymmdd}", flush=True)
-        top100 = fetch_day_universe(stock, yyyymmdd)
+        top100 = fetch_day_universe(day_df)
         if not top100:
             print(f"[SKIP] {yyyymmdd} empty", flush=True)
             continue
-        calendar = day_to_calendar_row(
-            stock,
-            yyyymmdd,
-            top100,
-            theme_index,
-            name_cache,
-        )
+        calendar = day_to_calendar_row(yyyymmdd, top100, theme_index)
         if calendar:
             rows.append(calendar)
             print(
@@ -468,8 +491,8 @@ def main() -> int:
             )
 
     output = {
-        "version": 1,
-        "source": "pykrx-krx-daily-top100-reconstruction",
+        "version": 2,
+        "source": "financedata-marcap-daily-top100-reconstruction",
         "generated_at": datetime.now(KST).isoformat(timespec="seconds"),
         "from_date": args.from_date,
         "to_date": args.to_date,
@@ -477,19 +500,16 @@ def main() -> int:
         "row_count": len(rows),
         "rows": rows,
         "limitations": [
-            "과거 ka10032 순위 원본이 아니라 KRX 일별 거래대금으로 TOP100을 재구성한 값",
-            "ETF는 TOP100 분모에 포함하고 테마 집계에서는 제외",
-            "ETN/관리종목/과거 종목유형 차이로 실시간 ka10032와 소폭 차이가 날 수 있음",
+            "과거 ka10032 순위 원본이 아니라 FinanceData/marcap 일별 Amount로 TOP100을 재구성한 값",
+            "marcap 주식 모집단에는 ETF/ETN이 없어 실시간 ka10032 TOP100 분모와 차이가 날 수 있음",
             "테마 구성은 현재 키움 테마 마스터/보조테마를 과거 날짜에 적용",
             "장중 최고점유율·주도교체·지속시간·Δ5/15/30/60은 스냅샷 미보유 과거일에 복원하지 않음",
+            "8/25 실시간 마감 실측값과 반드시 교차검증한 뒤 시트 반영",
         ],
     }
 
     out_path = Path(args.output).expanduser()
-    out_path.write_text(
-        json.dumps(output, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    out_path.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[SAVED] {out_path} rows={len(rows)}", flush=True)
 
     if args.post:
