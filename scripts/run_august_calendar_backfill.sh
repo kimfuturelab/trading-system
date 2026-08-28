@@ -23,7 +23,7 @@ python3 -m venv "$VENV"
 echo "===== AUGUST BACKFILL — KIWOOM HISTORY ====="
 echo "※ 최초 실행은 ka10015 과거데이터 캐시를 만들기 때문에 시간이 걸릴 수 있습니다. 중단돼도 다음 실행에서 캐시 재사용합니다."
 "$VENV/bin/python" "$REPO_DIR/collector/kiwoom_calendar_history_backfill.py" \
-  --from-date 20260801 \
+  --from-date 20260803 \
   --to-date 20260827 \
   --auth-env "$HOME/api-read-v2.env" \
   --theme-master "$HOME/.market-flow-theme-master.json" \
