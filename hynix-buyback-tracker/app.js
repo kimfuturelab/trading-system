@@ -13,8 +13,13 @@ const fmtInt = v => Number.isFinite(Number(v)) ? Math.round(Number(v)).toLocaleS
 const fmtQty = v => Number.isFinite(Number(v)) ? `${fmtInt(v)}주` : '-';
 const fmtPrice = v => Number.isFinite(Number(v)) && Number(v) > 0 ? `${fmtInt(v)}원` : '-';
 const pctValue = v => {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return null;
+  if(v===null || v===undefined) return null;
+  const text=String(v).trim().replace(/,/g,'');
+  if(!text) return null;
+  const isPercent=text.endsWith('%');
+  const n=Number(isPercent?text.slice(0,-1):text);
+  if(!Number.isFinite(n)) return null;
+  if(isPercent) return n;
   return Math.abs(n) <= 1.5 ? n * 100 : n;
 };
 const fmtPct = v => { const n=pctValue(v); return n===null?'-':`${n.toFixed(1)}%`; };
@@ -98,8 +103,15 @@ function render(data){
   $('progressText').textContent=fmtPct(progress);
   $('progressBar').style.width=`${(progress*100).toFixed(1)}%`;
   $('price').textContent=fmtPrice(data.price);
-  const cp=pctValue(data.changePct);
-  $('changePct').textContent=fmtPctSigned(data.changePct);
+  const priceNum=Number(data.price);
+  const prevCloseNum=Number(data.prevClose);
+  let cp=null;
+  if(Number.isFinite(priceNum) && Number.isFinite(prevCloseNum) && prevCloseNum>0){
+    cp=(priceNum/prevCloseNum-1)*100;
+  }else{
+    cp=pctValue(data.changePct);
+  }
+  $('changePct').textContent=cp===null?'-':`${cp>0?'+':''}${cp.toFixed(2)}%`;
   $('changePct').className=`chg ${cp===null||cp===0?'flat':cp>0?'up':'down'}`;
   $('prevClose').textContent=`전일 종가 ${fmtPrice(data.prevClose)}`;
   $('applicationQty').textContent=fmtQty(data.applicationQty);
