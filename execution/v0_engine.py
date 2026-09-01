@@ -5,10 +5,8 @@ import argparse
 import json
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from broker_cli import BrokerCliError, KiwoomCliBroker
 from safety import (
@@ -21,7 +19,6 @@ from safety import (
 )
 from state_store import DuplicateIntentError, StateStore
 
-KST = ZoneInfo("Asia/Seoul")
 DEFAULT_AUTH_ENV = Path.home() / "api-read-v2.env"
 DEFAULT_EXEC_ENV = Path.home() / "trading-execution.env"
 
@@ -36,25 +33,6 @@ def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def broker_account_mask(snapshot: dict[str, Any]) -> str:
-    account = _dict(snapshot.get("account"))
-    return str(account.get("계좌번호") or account.get("acnt_no") or "").strip()
-
-
-def account_mask_matches(configured_full: str, broker_masked: str) -> bool:
-    """Compare the configured account with CLI's redacted account safely.
-
-    `kiwoomcli` intentionally redacts account numbers.  V0 therefore verifies
-    the visible suffix while keeping the full allowed account only in the
-    private server env file.
-    """
-    configured_full = str(configured_full or "").strip()
-    broker_masked = str(broker_masked or "").strip()
-    if not configured_full or len(configured_full) < 4 or len(broker_masked) < 4:
-        return False
-    return configured_full[-4:] == broker_masked[-4:]
-
-
 def parse_intish(value: Any) -> int | None:
     text = str(value or "").strip().replace(",", "")
     if not text:
@@ -65,18 +43,129 @@ def parse_intish(value: Any) -> int | None:
         return None
 
 
+def normalize_symbol(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if len(text) == 7 and text.startswith("A") and text[1:].isdigit():
+        return text[1:]
+    return text
+
+
+def _top_level_rows(payload: Any) -> list[dict[str, Any]]:
+    """Collect list-of-dict rows from a named Kiwoom JSON payload.
+
+    Different account/order APIs use different top-level Korean table names,
+    so V0 intentionally parses table values rather than hard-coding only one.
+    Scalar summary fields are ignored.
+    """
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if not isinstance(payload, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for value in payload.values():
+        if isinstance(value, list):
+            rows.extend(row for row in value if isinstance(row, dict))
+    return rows
+
+
+def _row_order_no(row: dict[str, Any]) -> str:
+    return str(row.get("주문번호") or row.get("ord_no") or "").strip()
+
+
+def _row_symbol(row: dict[str, Any]) -> str:
+    return normalize_symbol(
+        row.get("종목번호")
+        or row.get("종목코드")
+        or row.get("stk_cd")
+        or row.get("code")
+    )
+
+
+def _row_filled_qty(row: dict[str, Any]) -> int:
+    for key in ("체결수량", "체결량", "cntr_qty"):
+        value = parse_intish(row.get(key))
+        if value is not None:
+            return max(0, value)
+    return 0
+
+
+def _row_order_qty(row: dict[str, Any]) -> int:
+    for key in ("주문수량", "ord_qty"):
+        value = parse_intish(row.get(key))
+        if value is not None:
+            return max(0, value)
+    return 0
+
+
+def _row_unfilled_qty(row: dict[str, Any]) -> int | None:
+    for key in ("미체결수량", "미체결량", "oso_qty"):
+        value = parse_intish(row.get(key))
+        if value is not None:
+            return max(0, value)
+    return None
+
+
+def broker_account_mask(snapshot: dict[str, Any]) -> str:
+    account = _dict(snapshot.get("account"))
+    return str(account.get("계좌번호") or account.get("acnt_no") or "").strip()
+
+
+def account_mask_matches(configured_full: str, broker_masked: str) -> bool:
+    configured_full = str(configured_full or "").strip()
+    broker_masked = str(broker_masked or "").strip()
+    if not configured_full or len(configured_full) < 4 or len(broker_masked) < 4:
+        return False
+    return configured_full[-4:] == broker_masked[-4:]
+
+
+def holdings_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    holdings = _dict(snapshot.get("holdings"))
+    rows = holdings.get("계좌평가잔고개별합산")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+    return _top_level_rows(holdings)
+
+
+def holding_qty(snapshot: dict[str, Any], symbol: str) -> int:
+    symbol = normalize_symbol(symbol)
+    total = 0
+    for row in holdings_rows(snapshot):
+        if _row_symbol(row) != symbol:
+            continue
+        for key in ("보유수량", "rmnd_qty", "보유량"):
+            qty = parse_intish(row.get(key))
+            if qty is not None:
+                total += max(0, qty)
+                break
+    return total
+
+
+def orderable_cash(snapshot: dict[str, Any]) -> int | None:
+    return parse_intish(_dict(snapshot.get("cash")).get("주문가능금액"))
+
+
+def open_order_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    return _top_level_rows(snapshot.get("open_orders"))
+
+
+def fill_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    return _top_level_rows(snapshot.get("fills"))
+
+
+def order_status_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    return _top_level_rows(snapshot.get("order_fill_status"))
+
+
 def snapshot_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
     cash = _dict(snapshot.get("cash"))
-    holdings = _dict(snapshot.get("holdings"))
     orders = _dict(snapshot.get("order_fill_status"))
-    rows = holdings.get("계좌평가잔고개별합산")
-    if not isinstance(rows, list):
-        rows = []
     return {
         "broker_account": broker_account_mask(snapshot) or "(unknown)",
         "orderable_cash": parse_intish(cash.get("주문가능금액")),
         "estimated_deposit": parse_intish(cash.get("예수금")),
-        "holding_count": len(rows),
+        "holding_count": len(holdings_rows(snapshot)),
+        "broker_open_order_count": len(open_order_rows(snapshot)),
+        "broker_fill_row_count": len(fill_rows(snapshot)),
         "order_status_return_code": orders.get("return_code"),
         "order_status_return_msg": orders.get("return_msg"),
     }
@@ -91,6 +180,124 @@ def read_and_save_snapshot(
     return snapshot
 
 
+def sync_open_intents(
+    store: StateStore,
+    snapshot: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Reconcile local non-terminal intents against Kiwoom broker truth.
+
+    Rules:
+    - Full broker fill => local order intent becomes FILLED (terminal order state).
+    - Open/unfilled broker order => OPEN or PARTIAL and remains blocking.
+    - No broker order number on a local intent => never guess; remains blocking.
+    - Submitted order not yet visible => remains blocking; never blind resend.
+    """
+    transitions: list[dict[str, Any]] = []
+    fills = fill_rows(snapshot)
+    status_rows = order_status_rows(snapshot)
+    opens = open_order_rows(snapshot)
+
+    for intent in store.open_intents():
+        intent_id = str(intent.get("intent_id") or "")
+        order_no = str(intent.get("broker_order_no") or "").strip()
+        requested_qty = int(intent.get("qty") or 0)
+        old_status = str(intent.get("status") or "")
+
+        if not order_no:
+            transitions.append(
+                {
+                    "intent_id": intent_id,
+                    "from": old_status,
+                    "to": old_status,
+                    "reason": "NO_BROKER_ORDER_NO_REQUIRES_REVIEW",
+                }
+            )
+            continue
+
+        matched_fills = [row for row in fills if _row_order_no(row) == order_no]
+        matched_status = [row for row in status_rows if _row_order_no(row) == order_no]
+        matched_open = [row for row in opens if _row_order_no(row) == order_no]
+
+        # Prefer ka10076 fill rows. If unavailable, fall back to the account
+        # order/fill status row already proven in the 2026-09-01 live test.
+        source_rows = matched_fills if matched_fills else matched_status
+        filled_qty = sum(_row_filled_qty(row) for row in source_rows)
+        if matched_status and not matched_fills:
+            # Account status may contain one aggregated row, so sum is valid;
+            # in the live test it returned exactly one row/order.
+            filled_qty = sum(_row_filled_qty(row) for row in matched_status)
+
+        if requested_qty > 0 and filled_qty >= requested_qty:
+            store.update_intent(
+                intent_id,
+                status="FILLED",
+                broker_order_no=order_no,
+                last_error=None,
+                raw_response={
+                    "matched_fill_rows": matched_fills,
+                    "matched_status_rows": matched_status,
+                    "filled_qty": filled_qty,
+                },
+            )
+            transitions.append(
+                {
+                    "intent_id": intent_id,
+                    "from": old_status,
+                    "to": "FILLED",
+                    "broker_order_no": order_no,
+                    "filled_qty": filled_qty,
+                }
+            )
+            continue
+
+        if matched_open:
+            unfilled_values = [_row_unfilled_qty(row) for row in matched_open]
+            unfilled_values = [v for v in unfilled_values if v is not None]
+            new_status = "PARTIAL" if filled_qty > 0 else "OPEN"
+            store.update_intent(
+                intent_id,
+                status=new_status,
+                broker_order_no=order_no,
+                raw_response={
+                    "matched_open_rows": matched_open,
+                    "matched_fill_rows": matched_fills,
+                    "filled_qty": filled_qty,
+                    "unfilled_qty": max(unfilled_values) if unfilled_values else None,
+                },
+            )
+            transitions.append(
+                {
+                    "intent_id": intent_id,
+                    "from": old_status,
+                    "to": new_status,
+                    "broker_order_no": order_no,
+                    "filled_qty": filled_qty,
+                }
+            )
+            continue
+
+        # Broker propagation can lag immediately after submit.  This is not a
+        # reason to resend. Keep it non-terminal and require another read.
+        new_status = "AWAITING_BROKER_VISIBILITY"
+        store.update_intent(
+            intent_id,
+            status=new_status,
+            broker_order_no=order_no,
+            last_error="order not found in current open/fill snapshot; DO NOT RESEND",
+        )
+        transitions.append(
+            {
+                "intent_id": intent_id,
+                "from": old_status,
+                "to": new_status,
+                "broker_order_no": order_no,
+                "filled_qty": filled_qty,
+            }
+        )
+
+    return transitions
+
+
 def reconciliation_report(
     cfg: ExecutionConfig,
     store: StateStore,
@@ -98,6 +305,7 @@ def reconciliation_report(
 ) -> dict[str, Any]:
     masked = broker_account_mask(snapshot)
     open_intents = store.open_intents()
+    broker_opens = open_order_rows(snapshot)
     reasons: list[str] = []
 
     if not cfg.allowed_account:
@@ -105,9 +313,10 @@ def reconciliation_report(
     elif not account_mask_matches(cfg.allowed_account, masked):
         reasons.append("BROKER_ACCOUNT_SUFFIX_MISMATCH")
 
+    if broker_opens:
+        reasons.append("BROKER_OPEN_ORDERS_PRESENT")
+
     if open_intents:
-        # V0 does not guess.  Once there is an unfinished local intent we need
-        # broker-order/fill mapping before allowing another write.
         reasons.append("LOCAL_OPEN_INTENTS_REQUIRE_REVIEW")
 
     return {
@@ -115,6 +324,7 @@ def reconciliation_report(
         "block_reasons": reasons,
         "broker_account": masked or "(unknown)",
         "configured_account": mask_account(cfg.allowed_account),
+        "broker_open_order_count": len(broker_opens),
         "local_open_intent_count": len(open_intents),
         "local_open_intents": [
             {
@@ -144,14 +354,40 @@ def preview_shape_errors(cfg: ExecutionConfig, *, symbol: str, qty: int) -> list
     return reasons
 
 
+def semantic_order_errors(
+    snapshot: dict[str, Any],
+    *,
+    side: str,
+    symbol: str,
+    qty: int,
+) -> list[str]:
+    """V0 position-aware last-mile checks before a live write."""
+    reasons: list[str] = []
+    held = holding_qty(snapshot, symbol)
+    side = side.upper()
+
+    if side == "BUY" and held > 0:
+        reasons.append("V0_BUY_WOULD_STACK_EXISTING_POSITION")
+    if side == "SELL" and held < qty:
+        reasons.append("V0_SELL_QTY_EXCEEDS_HOLDING")
+    if side == "BUY":
+        cash = orderable_cash(snapshot)
+        if cash is None or cash <= 0:
+            reasons.append("NO_ORDERABLE_CASH")
+    return reasons
+
+
 def cmd_read_state(args: argparse.Namespace) -> int:
     cfg = load_runtime(Path(args.auth_env), Path(args.exec_env))
     broker = KiwoomCliBroker(mode=args.mode)
     store = StateStore(cfg.state_db)
     snapshot = read_and_save_snapshot(broker, store)
+    transitions = sync_open_intents(store, snapshot)
 
     print("===== V0 PYTHON BROKER READ =====")
     print(json.dumps(snapshot_summary(snapshot), ensure_ascii=False, indent=2))
+    print("\n===== INTENT SYNC =====")
+    print(json.dumps(transitions, ensure_ascii=False, indent=2))
     print("\n===== RECONCILIATION =====")
     print(json.dumps(reconciliation_report(cfg, store, snapshot), ensure_ascii=False, indent=2))
     return 0
@@ -162,10 +398,14 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     broker = KiwoomCliBroker(mode=args.mode)
     store = StateStore(cfg.state_db)
     snapshot = read_and_save_snapshot(broker, store)
+    transitions = sync_open_intents(store, snapshot)
     report = reconciliation_report(cfg, store, snapshot)
 
     print("===== V0 RECONCILE =====")
     print(json.dumps(snapshot_summary(snapshot), ensure_ascii=False, indent=2))
+    print("===== INTENT SYNC =====")
+    print(json.dumps(transitions, ensure_ascii=False, indent=2))
+    print("===== GATE =====")
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if report["reconciled_for_new_write"]:
         print("[PASS] broker/local baseline reconciled for a new write.")
@@ -229,14 +469,28 @@ def cmd_live_order(args: argparse.Namespace) -> int:
     broker = KiwoomCliBroker(mode=args.mode)
     store = StateStore(cfg.state_db)
 
-    # READ/reconcile immediately before every live write.
+    # READ/sync/reconcile immediately before every live write.
     snapshot = read_and_save_snapshot(broker, store)
+    transitions = sync_open_intents(store, snapshot)
+    if transitions:
+        print("===== PRE-WRITE INTENT SYNC =====")
+        print(json.dumps(transitions, ensure_ascii=False, indent=2))
+
     report = reconciliation_report(cfg, store, snapshot)
     if not report["reconciled_for_new_write"]:
         print("[BLOCKED] reconciliation: " + ", ".join(report["block_reasons"]))
         return 2
 
-    # Independent final write guard.
+    semantic_reasons = semantic_order_errors(
+        snapshot,
+        side=side,
+        symbol=symbol,
+        qty=args.qty,
+    )
+    if semantic_reasons:
+        print("[BLOCKED] position/cash gate: " + ", ".join(semantic_reasons))
+        return 2
+
     assert_live_write_allowed(cfg)
 
     # Persist intent BEFORE broker write.
@@ -265,7 +519,6 @@ def cmd_live_order(args: argparse.Namespace) -> int:
             confirm_live_write=True,
         )
     except subprocess.TimeoutExpired as exc:
-        # Critical rule: result is UNKNOWN, never blind retry.
         store.update_intent(
             intent_id,
             status="UNKNOWN_ACK",
@@ -274,8 +527,6 @@ def cmd_live_order(args: argparse.Namespace) -> int:
         print("[UNKNOWN] broker write timed out. DO NOT RESEND. Run reconcile/read-state first.")
         return 3
     except Exception as exc:
-        # For a non-timeout CLI/API failure we still preserve the intent and
-        # require a human/broker reconciliation before deciding terminal state.
         store.update_intent(
             intent_id,
             status="SUBMIT_ERROR_REVIEW",
@@ -295,14 +546,14 @@ def cmd_live_order(args: argparse.Namespace) -> int:
 
     print("===== LIVE ORDER SUBMITTED =====")
     print(json.dumps(result.payload, ensure_ascii=False, indent=2))
-    print("[IMPORTANT] SUBMITTED != FILLED. Run read-state/reconcile and verify broker holdings/fills.")
+    print("[IMPORTANT] SUBMITTED != FILLED. Run `v0_engine.py reconcile` until FILLED before another write.")
     return 0
 
 
 def cmd_intents(args: argparse.Namespace) -> int:
     cfg = load_runtime(Path(args.auth_env), Path(args.exec_env))
     store = StateStore(cfg.state_db)
-    print(json.dumps(store.open_intents(), ensure_ascii=False, indent=2, default=str))
+    print(json.dumps(store.list_intents(), ensure_ascii=False, indent=2, default=str))
     return 0
 
 
