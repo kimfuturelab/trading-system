@@ -51,8 +51,6 @@
 - `ka00001` — 계좌번호조회
 - `kt00018` — 계좌평가잔고내역
 
-주문 API는 V0 첫 커밋에서는 호출하지 않는다. 먼저 서버 환경과 읽기 경로를 검증한 뒤 연결한다.
-
 ## 서버 1차 점검
 
 서버에서 이 브랜치를 받은 후:
@@ -72,24 +70,44 @@ python3 execution/v0_probe.py safety-test
 ## V0 진행 순서
 
 ```text
-STEP 1  서버/인증/CLI 확인
-STEP 2  독립 execution 설정 + SQLite intent 저장소
-STEP 3  계좌/잔고/미체결/체결 READ 연결
-STEP 4  주문 전 reconciliation + Safety Gate
-STEP 5  매수/매도 함수 연결 (기본 OFF)
-STEP 6  PAPER/Shadow 검증
-STEP 7  명시적 LIVE_SMALL ARM 후 1주 왕복
-STEP 8  재시작 후 포지션 복구
+STEP 1  서버/인증/CLI 확인                         DONE
+STEP 2  독립 execution 설정 + SQLite intent 저장소  DONE
+STEP 3  계좌/잔고/미체결/체결 READ 검증             DONE (CLI)
+STEP 4  주문 전 reconciliation + Safety Gate        NEXT
+STEP 5  매수/매도 함수 연결 (기본 OFF)              NEXT
+STEP 6  Python DRY RUN/Shadow 검증                  TODO
+STEP 7  명시적 LIVE_SMALL ARM 후 Python 1주 왕복   TODO
+STEP 8  재시작 후 포지션 복구                       TODO
 ```
 
-## 오늘 성공 기준
+## 2026-09-01 실계좌 수동 왕복 검증
 
-필수:
+수동 `kiwoomcli` 기준으로 삼성전자 `005930` 1주를 KRX 시장가로 **매수 → 실제 보유 확인 → 매도 → 보유 0 확인**까지 성공했다.
+
+이 검증으로 확인된 것:
+
+- 실전 계좌 READ 정상
+- 예수금/주문가능금액 READ 정상
+- 주문 Preview 정상 (`--confirm` 없으면 미전송)
+- 실전 1주 매수 접수 및 실제 보유 확인
+- 실전 1주 매도 접수 및 최종 청산 확인
+
+아직 Python 자동 주문엔진이 성공한 것은 아니다. 다음 단계는 **수동으로 성공한 경로를 Python adapter + reconciliation + Safety Gate로 이식**하는 것이다.
+
+상세 시행착오·명령·노하우는 [`V0_LIVE_ROUNDTRIP_2026-09-01.md`](./V0_LIVE_ROUNDTRIP_2026-09-01.md)에 기록한다.
+
+## 현재 성공 기준
+
+완료:
 - `execution/`이 기존 collector와 독립됨
-- 서버 인증/CLI 점검 가능
+- 서버 인증/CLI 점검 성공
 - Safety Gate 기본 차단 확인
-- SQLite 기반 중복 intent 차단 가능
+- SQLite 기반 중복 intent 차단 확인
+- 실계좌 READ 경로 확인
+- 수동 CLI 1주 왕복 성공
 
-도전:
-- 계좌·잔고·미체결 READ 경로까지 연결
-- 이후에만 1주 LIVE_SMALL 검토
+다음 완료선:
+- Python에서 account/cash/holdings/open/fills READ
+- broker ↔ local reconciliation
+- DRY RUN 주문 payload 검증
+- 이후에만 Python 1주 LIVE_SMALL 왕복
