@@ -66,7 +66,12 @@ class FakeBroker:
         assert kwargs["symbol"] == "005930"
         assert kwargs["qty"] == 1
         assert kwargs["exchange"] == self.exchange
-        assert kwargs["order_type"] == "market"
+        if self.exchange == "KRX":
+            assert kwargs["order_type"] == "market"
+            assert kwargs["price"] is None
+        else:
+            assert kwargs["order_type"] == "limit"
+            assert kwargs["price"] == "259000"
         assert kwargs["confirm_live_write"] is True
         return FakeResult(
             payload={
@@ -179,9 +184,10 @@ def main() -> int:
         )
         assert report["action"] == "SELL_SUBMITTED"
         assert report["exchange"] == "KRX"
+        assert report["order_route"]["order_type"] == "market"
         assert len(broker.submit_calls) == 1
         assert v1.get_plan(plan_id)["status"] == "CLOSED"
-        print("[PASS] KRX quote -> TIMECUT -> one SELL -> broker flat -> CLOSED")
+        print("[PASS] KRX quote -> TIMECUT -> market SELL -> CLOSED")
 
         try:
             run_live_exit_once(
@@ -227,10 +233,11 @@ def main() -> int:
         assert nxt["action"] == "SELL_SUBMITTED"
         assert nxt["exchange"] == "NXT"
         assert nxt["quote"]["query_code"] == "005930_NX"
+        assert nxt["order_route"]["order_type"] == "limit"
+        assert nxt["order_route"]["price"] == "259000"
         assert len(nxt_broker.submit_calls) == 1
-        assert nxt_broker.submit_calls[0]["exchange"] == "NXT"
         assert v1.get_plan(nxt_id)["status"] == "CLOSED"
-        print("[PASS] NXT quote code 005930_NX -> NXT holding gate -> one NXT SELL -> CLOSED")
+        print("[PASS] NXT quote -> aggressive LIMIT SELL (no market) -> CLOSED")
 
     print("[PASS] V1 KRX/NXT one-shot live exit integration fixture complete")
     print("[SAFE] no network or real order call occurred")
