@@ -4,15 +4,29 @@
 
 화면 개발보다 먼저 아래 데이터 파이프라인을 실제로 가동한다.
 
-`Kiwoom REST API -> 사용자 PC Python collector -> Google Apps Script Web App -> 3.5단계 자금흐름 / 원시_TOP100`
+`Kiwoom REST API -> Google Cloud kiwoom-server Python collector -> Google Apps Script Web App -> 3.5단계 자금흐름 / 원시_TOP100`
 
 Supabase와 Vercel은 1차 검증에서 제외한다.
 - Supabase: 장기 스냅샷/백테스트 DB가 필요해질 때 추가
 - Vercel: 검증된 데이터로 최종 화면을 만들 때 추가
 
-## 왜 사용자 PC에서 수집하는가
+## 인프라 원칙
 
-키움 REST API는 App Key 발급 전에 허용 IP 등록이 필요하다. 따라서 1차는 사용자의 현재 공인 IP를 키움에 등록하고 해당 PC에서 collector를 실행하는 구조가 가장 단순하다.
+새 VM이나 새 공인 IP를 만들지 않는다.
+
+하이닉스 추격자에서 이미 검증된 공통 인프라를 재사용한다.
+
+- Google Cloud VM: `kiwoom-server`
+- 리전: 서울 `asia-northeast3`
+- OS: Ubuntu 24.04 LTS
+- 고정 외부 IP 리소스: `kiwoom-static-ip`
+- 키움 허용 IP 등록: 완료된 기존 Cloud 고정 IP 사용
+- Google Sheet 기록: Apps Script Webhook 패턴 재사용
+- 실행관리: systemd 패턴 재사용
+
+하이닉스 추격자 원본과 기존 서비스는 수정하지 않는다. 같은 VM을 사용하되 3.5 collector는 별도 프로세스/서비스로 분리한다.
+
+실제 공인 IP 숫자, App Key/Secret, Webhook Secret, 계좌정보는 GitHub나 Google Sheet에 저장하지 않는다.
 
 ## Kiwoom 사용 API
 
@@ -20,7 +34,7 @@ Supabase와 Vercel은 1차 검증에서 제외한다.
 - API ID: `au10001`
 - Method: POST
 - URL: `/oauth2/token`
-- 토큰: 24시간 유효
+- 토큰 만료시각 기준으로 캐시 후 자동 재발급
 
 ### 거래대금 TOP100
 - API ID: `ka10032`
@@ -40,35 +54,37 @@ Supabase와 Vercel은 1차 검증에서 제외한다.
   - `now_trde_qty`
   - `trde_prica`
 
-collector는 별도 로컬 state 파일을 사용해 `직전 스냅샷 순위`와 `순위 변화`를 계산한다.
+collector는 별도 state 파일을 사용해 `직전 스냅샷 순위`와 `순위 변화`를 계산한다.
 
 ## GitHub 파일
 
 - `collector/kiwoom_collector.py` : 토큰 발급, ka10032 수집, 정규화, Apps Script 전송
 - `collector/.env.example` : 환경변수 템플릿
 - `collector/requirements.txt` : Python 패키지
-- `collector/start_loop.bat` : 5분 반복 실행용 Windows 런처
 - `apps-script/Code.gs` : Google Sheets 적재 Web App
+- `deploy/market-flow-collector.service.example` : 3.5 전용 systemd 예시
+- `CLOUD_DEPLOY.md` : 기존 kiwoom-server 재사용 배포 순서
 
-## 로컬 설치
+## Cloud 실행환경
 
 ```bash
-cd collector
-python -m venv .venv
-.venv\Scripts\activate
+cd ~/trading-system/collector
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-copy .env.example .env
+cp .env.example .env
+chmod 600 .env
 ```
 
-`.env`에 실제 App Key/App Secret을 넣는다. **실제 키는 GitHub에 올리지 않는다.**
+`.env`에는 서버에 안전하게 보관 중인 실제 App Key/App Secret, 3.5 Apps Script Web App URL, INGEST_SECRET을 넣는다. 실제 키는 GitHub에 올리지 않는다.
 
 ## Apps Script 설정
 
 1. 3.5단계 Google Sheet에서 Apps Script 프로젝트를 연다.
-2. `apps-script/Code.gs` 내용을 붙여넣는다.
-3. `setIngestSecretOnce()` 안의 `CHANGE_ME`를 임의의 긴 문자열로 바꾼 뒤 1회 실행한다.
+2. `apps-script/Code.gs` 내용을 배포 코드로 사용한다.
+3. `setIngestSecretOnce()`를 이용해 Script Properties에 INGEST_SECRET을 저장한다.
 4. Web App으로 배포한다.
-5. 배포 URL을 `.env`의 `SHEETS_WEBHOOK_URL`에 넣는다.
+5. 배포 URL을 서버 `.env`의 `SHEETS_WEBHOOK_URL`에 넣는다.
 6. 동일한 비밀문자열을 `.env`의 `INGEST_SECRET`에 넣는다.
 
 ## 1회 테스트
@@ -76,6 +92,8 @@ copy .env.example .env
 ```bash
 python kiwoom_collector.py
 ```
+
+수동 1회 실행은 장중 시간창을 무시하고 한 번 호출하므로 연결 확인에 사용할 수 있다.
 
 정상이면 `원시_TOP100`의 2행 이하가 현재 거래대금 상위 종목으로 교체된다.
 
@@ -85,9 +103,11 @@ python kiwoom_collector.py
 python kiwoom_collector.py --loop
 ```
 
-또는 `start_loop.bat` 실행.
-
 기본 반복 주기는 300초(5분)이다.
+
+`--loop`는 KST 기준 평일 `08:55~15:35` 안에서만 Kiwoom을 호출한다. Cloud VM OS timezone이 UTC여도 Python이 `Asia/Seoul`을 명시적으로 사용한다.
+
+한국 공휴일 자동 판정은 1차 범위에 포함하지 않는다.
 
 ## 최초 실데이터 검증 필수
 

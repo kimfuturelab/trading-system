@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
@@ -15,6 +16,7 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 TOKEN_CACHE = BASE_DIR / ".token_cache.json"
 STATE_CACHE = BASE_DIR / ".rank_state.json"
+KST = ZoneInfo("Asia/Seoul")
 
 
 def _signed_number(value: Any, *, absolute: bool = False) -> float:
@@ -34,10 +36,24 @@ def _int_number(value: Any, *, absolute: bool = False) -> int:
     return int(round(_signed_number(value, absolute=absolute)))
 
 
+def now_kst() -> datetime:
+    return datetime.now(KST)
+
+
 def now_kst_string() -> str:
-    # Collector is expected to run on a Korea-time workstation.
-    # We intentionally write an explicit text timestamp for Sheet auditing.
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Explicit KST timestamp so the collector is safe even when the VM OS timezone is UTC.
+    return now_kst().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _hhmm_to_minutes(value: str) -> int:
+    text = value.strip().replace(":", "")
+    if len(text) != 4 or not text.isdigit():
+        raise RuntimeError(f"Invalid HHMM value: {value}")
+    hour = int(text[:2])
+    minute = int(text[2:])
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise RuntimeError(f"Invalid HHMM value: {value}")
+    return hour * 60 + minute
 
 
 @dataclass
@@ -52,6 +68,8 @@ class Settings:
     exclude_managed: str
     poll_seconds: int
     trading_value_divisor: float
+    collect_start_hhmm: str
+    collect_end_hhmm: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -67,6 +85,8 @@ class Settings:
             exclude_managed=os.getenv("EXCLUDE_MANAGED", "1").strip(),
             poll_seconds=int(os.getenv("POLL_SECONDS", "300")),
             trading_value_divisor=float(os.getenv("TRADING_VALUE_DIVISOR", "100")),
+            collect_start_hhmm=os.getenv("COLLECT_START_HHMM", "0855").strip(),
+            collect_end_hhmm=os.getenv("COLLECT_END_HHMM", "1535").strip(),
         )
         missing = []
         if not settings.app_key:
@@ -79,9 +99,23 @@ class Settings:
             missing.append("INGEST_SECRET")
         if missing:
             raise RuntimeError("Missing required .env values: " + ", ".join(missing))
+        if settings.poll_seconds < 30:
+            raise RuntimeError("POLL_SECONDS must be >= 30")
         if settings.trading_value_divisor <= 0:
             raise RuntimeError("TRADING_VALUE_DIVISOR must be > 0")
+        _hhmm_to_minutes(settings.collect_start_hhmm)
+        _hhmm_to_minutes(settings.collect_end_hhmm)
         return settings
+
+
+def in_collection_window(settings: Settings, at: datetime | None = None) -> bool:
+    current = at or now_kst()
+    if current.weekday() >= 5:
+        return False
+    minute_of_day = current.hour * 60 + current.minute
+    start = _hhmm_to_minutes(settings.collect_start_hhmm)
+    end = _hhmm_to_minutes(settings.collect_end_hhmm)
+    return start <= minute_of_day <= end
 
 
 class KiwoomClient:
@@ -99,8 +133,8 @@ class KiwoomClient:
             expires_at = data.get("expires_at")
             if not token or not expires_at:
                 return None
-            expiry = datetime.strptime(expires_at, "%Y%m%d%H%M%S")
-            if datetime.now() >= expiry - timedelta(minutes=10):
+            expiry = datetime.strptime(expires_at, "%Y%m%d%H%M%S").replace(tzinfo=KST)
+            if now_kst() >= expiry - timedelta(minutes=10):
                 return None
             return str(token)
         except Exception:
@@ -242,7 +276,8 @@ def run_once(settings: Settings) -> None:
     save_current_ranks(rows)
     print(
         f"[{rows[0]['captured_at']}] sent {len(rows)} rows | "
-        f"sheet={result.get('sheet')} | top={rows[0]['stock_name']}"
+        f"sheet={result.get('sheet')} | top={rows[0]['stock_name']}",
+        flush=True,
     )
 
 
@@ -250,18 +285,23 @@ def main() -> int:
     try:
         settings = Settings.from_env()
     except Exception as exc:
-        print(f"CONFIG ERROR: {exc}", file=sys.stderr)
+        print(f"CONFIG ERROR: {exc}", file=sys.stderr, flush=True)
         return 2
 
     loop = "--loop" in sys.argv
     while True:
+        if loop and not in_collection_window(settings):
+            # systemd can keep the process alive all day without hitting Kiwoom outside the collection window.
+            time.sleep(min(settings.poll_seconds, 60))
+            continue
+
         try:
             run_once(settings)
         except KeyboardInterrupt:
-            print("Stopped by user")
+            print("Stopped by user", flush=True)
             return 0
         except Exception as exc:
-            print(f"RUN ERROR: {exc}", file=sys.stderr)
+            print(f"RUN ERROR: {exc}", file=sys.stderr, flush=True)
             if not loop:
                 return 1
 
