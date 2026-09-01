@@ -11,6 +11,7 @@ from broker_cli import BrokerCliError, KiwoomCliBroker
 from exit_plan import ExitPlan, ExitPlanStore, evaluate_exit_trigger, parse_iso_datetime
 from exit_write_journal import ExitWriteJournal
 from exit_write_reconcile import reconcile_exit_write
+from nxt_order_policy import aggressive_limit_price
 from quote_reader import QuoteSnapshot, read_quote_snapshot
 from safety import ExecutionConfig, assert_live_write_allowed, load_env_file
 from state_store import StateStore
@@ -42,7 +43,6 @@ def _pre_snapshot(broker: Any, exchange: str) -> dict[str, Any]:
     exchange = exchange.upper()
     if exchange == "KRX":
         return broker.read_snapshot()
-    # NXT must use NXT holdings, while order/fill reads stay account-wide.
     return {
         "account": broker.account_list().payload,
         "cash": broker.cash(basis="estimated").payload,
@@ -66,7 +66,12 @@ def run_live_exit_once(
     quote_reader: Callable[..., QuoteSnapshot] = read_quote_snapshot,
     exchange: str = "KRX",
 ) -> dict[str, Any]:
-    """Evaluate one EXIT_PLAN and, if fully gated, SELL once on KRX or NXT."""
+    """Evaluate one EXIT_PLAN and, if fully gated, SELL once on KRX or NXT.
+
+    KRX uses the already validated market route. NXT has no generic market route
+    in this execution path, so V1 derives a bounded aggressive LIMIT SELL from a
+    fresh NXT quote. Lack of immediate fill never causes an automatic resend.
+    """
     exchange = str(exchange or "").strip().upper()
     if exchange not in {"KRX", "NXT"}:
         raise RuntimeError("LIVE_EXIT_BLOCKED: exchange must be KRX|NXT")
@@ -102,6 +107,19 @@ def run_live_exit_once(
     else:
         raise RuntimeError(f"LIVE_EXIT_BLOCKED: unsupported plan status={status}")
 
+    # NXT needs a priced route. Always refresh the NXT quote at the actual write
+    # boundary, even if the trigger had been reserved earlier.
+    sell_order_type = "market"
+    sell_price: str | None = None
+    if exchange == "NXT":
+        quote = quote_reader(
+            broker,
+            symbol=str(row.get("symbol") or ""),
+            exchange="NXT",
+        )
+        sell_order_type = "limit"
+        sell_price = str(aggressive_limit_price(int(quote.last_price), side="SELL", ticks=2))
+
     snapshot = _pre_snapshot(broker, exchange)
     sync_open_intents(v0, snapshot)
     local_open_count = len(v0.open_intents())
@@ -110,6 +128,7 @@ def run_live_exit_once(
         cfg=cfg, plan_row=row, snapshot=snapshot,
         local_open_intent_count=local_open_count, broker=broker, journal=journal,
         mark_exit_submitted=v1.mark_exit_submitted, exchange=exchange,
+        order_type=sell_order_type, price=sell_price,
     )
 
     fresh_plan = v1.get_plan(plan_id)
@@ -132,6 +151,11 @@ def run_live_exit_once(
             "captured_at": quote.captured_at.isoformat(timespec="seconds"),
             "exchange": getattr(quote, "exchange", exchange),
             "query_code": getattr(quote, "query_code", ""),
+        },
+        "order_route": {
+            "order_type": sell_order_type,
+            "price": sell_price,
+            "policy": "KRX_MARKET" if exchange == "KRX" else "NXT_AGGRESSIVE_LIMIT_2TICKS",
         },
         "pre_write_broker": snapshot_summary(snapshot),
         "local_open_intent_count": local_open_count,
