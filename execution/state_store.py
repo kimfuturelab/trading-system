@@ -9,16 +9,21 @@ from zoneinfo import ZoneInfo
 
 KST = ZoneInfo("Asia/Seoul")
 
+# An order intent is terminal once that order itself is fully filled.
+# Position lifecycle is broker truth and is verified separately via holdings.
+TERMINAL_ORDER_STATUSES = ("FILLED", "CANCELLED", "REJECTED", "CLOSED")
+
 
 class DuplicateIntentError(RuntimeError):
     pass
 
 
 class StateStore:
-    """V0 로컬 영속 저장소.
+    """V0 local persistent state.
 
-    핵심 목적은 broker 호출 전에 intent_id를 선점해 동일 주문의 재전송을 막는 것이다.
-    broker/키움이 최종 진실이며, 이 DB만으로 포지션을 확정하지 않는다.
+    Primary purpose: reserve intent_id BEFORE broker write so the same logical
+    order cannot be blindly re-sent.  Kiwoom/broker state remains the source of
+    truth for orders, fills and positions.
     """
 
     def __init__(self, path: Path):
@@ -138,8 +143,15 @@ class StateStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def list_intents(self) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows = con.execute(
+                "SELECT * FROM order_intents ORDER BY created_at, intent_id"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def open_intents(self) -> list[dict[str, Any]]:
-        terminal = ("CLOSED", "CANCELLED", "REJECTED")
+        terminal = TERMINAL_ORDER_STATUSES
         placeholders = ",".join("?" for _ in terminal)
         with self.connect() as con:
             rows = con.execute(
