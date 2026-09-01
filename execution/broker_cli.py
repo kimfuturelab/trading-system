@@ -204,6 +204,38 @@ class KiwoomCliBroker:
         )
         return self._require_api_ok(result, allow_codes={0, 20})
 
+    def order_chance(
+        self,
+        *,
+        symbol: str,
+        side: str = "buy",
+        price: int | str,
+    ) -> BrokerResult:
+        """Read Kiwoom order/withdrawal capacity simulation for one symbol.
+
+        This is a READ-only call. V0 uses the returned margin-tier
+        주문가능금액 values to derive 최대주문가능금액. It never uses
+        주문가능현금 as the buy-capacity gate.
+        """
+        side = side.lower()
+        if side not in {"buy", "sell"}:
+            raise ValueError("side must be buy|sell")
+        price_text = str(price).strip().replace(",", "")
+        if not price_text.isdigit() or int(price_text) <= 0:
+            raise ValueError("price must be a positive integer")
+        result = self._run(
+            [
+                "domestic", "orders", "chance",
+                "--code", symbol,
+                "--side", side,
+                "--price", price_text,
+                "--mode", self.mode,
+                "--format", "json",
+                "--named",
+            ]
+        )
+        return self._require_api_ok(result)
+
     def read_snapshot(self) -> dict[str, Any]:
         account = self.account_list().payload
         cash = self.cash(basis="estimated").payload
