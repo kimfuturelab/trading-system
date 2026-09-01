@@ -3,25 +3,22 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 
-from quote_reader import QuoteTransportError, read_nxt_quote_rest
-from safety import load_env_file
-
-DEFAULT_AUTH_ENV = Path.home() / "api-read-v2.env"
+from quote_reader import QuoteTransportError, read_nxt_quote_official
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="V1 NXT quote READ check via raw Kiwoom REST")
+    p = argparse.ArgumentParser(
+        description="V1 NXT quote READ check via Kiwoom official SDK/kwcli runtime"
+    )
     p.add_argument("--symbol", default="005930")
-    p.add_argument("--auth-env", default=str(DEFAULT_AUTH_ENV))
     p.add_argument("--mode", choices=["real", "demo"], default="real")
     args = p.parse_args()
 
-    load_env_file(Path(args.auth_env), required=True)
     print("===== V1 NXT QUOTE CHECK — READ ONLY =====")
+    print("[INFO] Reusing the official kiwoomcli credential/token runtime; no new token flow.")
     try:
-        quote = read_nxt_quote_rest(symbol=args.symbol, mode=args.mode)
+        quote = read_nxt_quote_official(symbol=args.symbol, mode=args.mode)
     except (QuoteTransportError, ValueError) as exc:
         print(f"[BLOCKED] {type(exc).__name__}: {exc}")
         return 2
@@ -34,14 +31,18 @@ def main() -> int:
                 "query_code": quote.query_code,
                 "last_price": quote.last_price,
                 "captured_at": quote.captured_at.isoformat(timespec="seconds"),
-                "return_code": quote.payload.get("return_code") if isinstance(quote.payload, dict) else None,
-                "return_msg": quote.payload.get("return_msg") if isinstance(quote.payload, dict) else None,
+                "return_code": quote.payload.get("return_code")
+                if isinstance(quote.payload, dict)
+                else None,
+                "return_msg": quote.payload.get("return_msg")
+                if isinstance(quote.payload, dict)
+                else None,
             },
             ensure_ascii=False,
             indent=2,
         )
     )
-    print("[PASS] NXT quote read succeeded via raw Kiwoom REST ka10001.")
+    print("[PASS] NXT quote read succeeded through Kiwoom official SDK ka10001.")
     print("[SAFE] READ only. No broker order endpoint was called.")
     return 0
 
