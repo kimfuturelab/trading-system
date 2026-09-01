@@ -154,11 +154,6 @@ class KiwoomCliBroker:
         return self._require_api_ok(result)
 
     def order_fill_status(self) -> BrokerResult:
-        """Read today's account-level order/fill status.
-
-        Kiwoom can return code 20 / '관련자료가없습니다' when there has been no
-        order for the day. In V0 reconciliation that is a valid empty state.
-        """
         result = self._run(
             [
                 "domestic", "accounts", "order-fill-status",
@@ -175,7 +170,6 @@ class KiwoomCliBroker:
         return self._require_api_ok(result, allow_codes={0, 20})
 
     def list_open_orders(self) -> BrokerResult:
-        """Read current unfilled/open orders via ka10075."""
         result = self._run(
             [
                 "domestic", "orders", "list-open",
@@ -190,7 +184,6 @@ class KiwoomCliBroker:
         return self._require_api_ok(result, allow_codes={0, 20})
 
     def list_fills(self) -> BrokerResult:
-        """Read today's fills via ka10076."""
         result = self._run(
             [
                 "domestic", "orders", "list-fills",
@@ -211,12 +204,6 @@ class KiwoomCliBroker:
         side: str = "buy",
         price: int | str,
     ) -> BrokerResult:
-        """Read Kiwoom order/withdrawal capacity simulation for one symbol.
-
-        This is a READ-only call. V0 uses the returned margin-tier
-        주문가능금액 values to derive 최대주문가능금액. It never uses
-        주문가능현금 as the buy-capacity gate.
-        """
         side = side.lower()
         if side not in {"buy", "sell"}:
             raise ValueError("side must be buy|sell")
@@ -275,6 +262,13 @@ class KiwoomCliBroker:
         order_type = order_type.lower()
         if order_type not in {"limit", "market"}:
             raise ValueError("order_type must be limit|market")
+
+        # NXT does not accept the generic market order route used by this CLI.
+        # Fail locally before any broker write. NXT exits must use a supported
+        # priced order route (V1 uses an aggressive limit derived from NXT quote).
+        if exchange == "NXT" and order_type == "market":
+            raise ValueError("NXT_MARKET_ORDER_NOT_SUPPORTED_USE_LIMIT")
+
         if order_type == "limit" and not price:
             raise ValueError("limit order requires price")
 
@@ -326,7 +320,6 @@ class KiwoomCliBroker:
         price: str | None = None,
         confirm_live_write: bool = False,
     ) -> BrokerResult:
-        """Actual broker WRITE with an independent explicit boolean guard."""
         if not confirm_live_write:
             raise BrokerCliError("실주문 차단: confirm_live_write=True가 필요합니다.")
         args = self._order_args(
