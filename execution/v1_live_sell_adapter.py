@@ -17,6 +17,7 @@ class LiveSellResult:
     symbol: str
     qty: int
     broker_order_no: str
+    exchange: str
 
 
 def _extract_order_no(payload: Any) -> str:
@@ -34,26 +35,14 @@ def execute_live_sell_once(
     broker: Any,
     journal: ExitWriteJournal,
     mark_exit_submitted: Callable[..., Any],
+    exchange: str = "KRX",
 ) -> LiveSellResult:
-    """One guarded V1 broker SELL write.
-
-    IMPORTANT: this module is intentionally not exposed through a CLI yet.
-
-    Ordering contract:
-    1) broker/local exact-holding gates
-    2) safety config/account/allowlist checks
-    3) persistent WRITE_RESERVED journal
-    4) independent final live-write assertion
-    5) broker submit exactly once
-    6) persist ACKED + EXIT_SUBMITTED
-
-    Any existing journal row blocks a second write for that exit_intent_id.
-    Timeout/ambiguous failure is never retried automatically.
-    """
+    """One guarded V1 broker SELL write. No automatic retry."""
     handoff = prepare_sell_handoff(
         plan_row,
         snapshot,
         local_open_intent_count=int(local_open_intent_count),
+        exchange=exchange,
     )
 
     broker_masked = broker_account_mask(snapshot)
@@ -85,7 +74,6 @@ def execute_live_sell_once(
             "LIVE_SELL_DUPLICATE_BLOCKED: existing write journal requires broker reconciliation"
         ) from exc
 
-    # Independent guard immediately before the broker write.
     assert_live_write_allowed(cfg)
 
     try:
@@ -131,9 +119,6 @@ def execute_live_sell_once(
         broker_order_no=order_no,
         raw_response=payload,
     )
-
-    # If this local state transition itself fails, the ACKED journal still
-    # preserves broker_order_no and blocks any duplicate write on restart.
     mark_exit_submitted(handoff.plan_id, broker_order_no=order_no)
 
     return LiveSellResult(
@@ -142,4 +127,5 @@ def execute_live_sell_once(
         symbol=handoff.symbol,
         qty=int(handoff.qty),
         broker_order_no=order_no,
+        exchange=handoff.exchange,
     )
