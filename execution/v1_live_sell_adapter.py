@@ -18,6 +18,8 @@ class LiveSellResult:
     qty: int
     broker_order_no: str
     exchange: str
+    order_type: str
+    price: str | None
 
 
 def _extract_order_no(payload: Any) -> str:
@@ -36,6 +38,8 @@ def execute_live_sell_once(
     journal: ExitWriteJournal,
     mark_exit_submitted: Callable[..., Any],
     exchange: str = "KRX",
+    order_type: str | None = None,
+    price: str | None = None,
 ) -> LiveSellResult:
     """One guarded V1 broker SELL write. No automatic retry."""
     handoff = prepare_sell_handoff(
@@ -43,6 +47,8 @@ def execute_live_sell_once(
         snapshot,
         local_open_intent_count=int(local_open_intent_count),
         exchange=exchange,
+        order_type=order_type,
+        price=price,
     )
 
     broker_masked = broker_account_mask(snapshot)
@@ -83,7 +89,7 @@ def execute_live_sell_once(
             qty=int(handoff.qty),
             exchange=handoff.exchange,
             order_type=handoff.order_type,
-            price=None,
+            price=handoff.price,
             confirm_live_write=True,
         )
     except subprocess.TimeoutExpired as exc:
@@ -128,4 +134,6 @@ def execute_live_sell_once(
         qty=int(handoff.qty),
         broker_order_no=order_no,
         exchange=handoff.exchange,
+        order_type=handoff.order_type,
+        price=handoff.price,
     )
