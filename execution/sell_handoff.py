@@ -23,12 +23,17 @@ def prepare_sell_handoff(
     snapshot: dict[str, Any],
     *,
     local_open_intent_count: int,
+    exchange: str = "KRX",
 ) -> SellHandoff:
     """Convert a triggered EXIT_PLAN into one broker SELL handoff.
 
     Pure function: never calls Kiwoom and never sends an order. Broker holdings
     and open orders from the supplied snapshot are the gate truth.
     """
+    exchange = str(exchange or "").strip().upper()
+    if exchange not in {"KRX", "NXT"}:
+        raise RuntimeError("SELL_HANDOFF_BLOCKED: UNSUPPORTED_EXCHANGE")
+
     symbol = str(plan_row.get("symbol") or "").strip().upper()
     remaining = int(plan_row.get("remaining_qty") or 0)
     broker_qty = holding_qty(snapshot, symbol)
@@ -57,4 +62,5 @@ def prepare_sell_handoff(
         exit_intent_id=exit_intent_id,
         symbol=symbol,
         qty=remaining,
+        exchange=exchange,
     )
