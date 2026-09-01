@@ -1,5 +1,13 @@
-const REFRESH_MS = 30_000;
+const REFRESH_MS = 30000;
+const REQUEST_TIMEOUT_MS = 15000;
+const RETRY_DELAY_MS = 1500;
+const ERROR_AFTER_FAILURES = 3;
 const PUBLIC_API_URL = 'https://script.google.com/macros/s/AKfycbznUeW68apO8MM2AEX_T_PZ2FfwrPGfojUIgDSDRXz-YRIzTbGbOUhb30BzUxue90qHQA/exec';
+
+let refreshRunning = false;
+let consecutiveFailures = 0;
+let hasLiveData = false;
+
 const $ = id => document.getElementById(id);
 const fmtInt = v => Number.isFinite(Number(v)) ? Math.round(Number(v)).toLocaleString('ko-KR') : '-';
 const fmtQty = v => Number.isFinite(Number(v)) ? `${fmtInt(v)}주` : '-';
@@ -13,6 +21,7 @@ const fmtPct = v => { const n=pctValue(v); return n===null?'-':`${n.toFixed(1)}%
 const fmtPctSigned = v => { const n=pctValue(v); return n===null?'-':`${n>0?'+':''}${n.toFixed(2)}%`; };
 const fmtX = v => Number.isFinite(Number(v)) ? `${Number(v).toFixed(2)}x` : '-';
 const safeTime = v => String(v || '').slice(0,5) || '-';
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function signalMeta(signal){
   const s=String(signal||'WAIT').toUpperCase();
@@ -120,35 +129,96 @@ function render(data){
   renderChart(data.timeseries,data.applicationQty);
 }
 
-function showError(error){
-  const detail=String(error&&error.message?error.message:error||'unknown_error').slice(0,80);
-  $('liveState').textContent='● 연결 오류'; $('liveState').className='live error';
-  $('liveTime').textContent='실시간 API 응답 실패';
-  $('updatePanel').className='update-panel error';
-  $('updateTime').textContent='연결 오류';
-  $('updateDate').textContent=detail;
+function failureReason(error){
+  const reason=String(error&&error.message?error.message:error||'unknown_error');
+  if(reason==='jsonp_timeout') return 'jsonp_timeout';
+  if(reason==='jsonp_load_error') return 'jsonp_load_error';
+  return reason.slice(0,80);
 }
 
-function load(){
-  const callbackName=`__hynixLive_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  const script=document.createElement('script');
-  let done=false;
-  const cleanup=()=>{
-    if(done) return;
-    done=true;
-    clearTimeout(timer);
-    try{ delete window[callbackName]; }catch{}
-    script.remove();
-  };
-  window[callbackName]=(data)=>{
-    cleanup();
-    try{ render(data); }catch(err){ console.error('[hynix-live-render]',err); showError(err); }
-  };
-  script.onerror=()=>{ cleanup(); showError(new Error('jsonp_load_error')); };
-  script.src=`${PUBLIC_API_URL}?callback=${encodeURIComponent(callbackName)}&_=${Date.now()}`;
-  script.async=true;
-  const timer=setTimeout(()=>{ cleanup(); showError(new Error('jsonp_timeout')); },9000);
-  document.head.appendChild(script);
+function recordFailure(error,attempt){
+  const reason=failureReason(error);
+  const entry={time:new Date().toISOString(),attempt,reason};
+  console.warn('[hynix-live-request-failure]',entry);
+  if(!Array.isArray(window.__hynixConnectionFailures)) window.__hynixConnectionFailures=[];
+  window.__hynixConnectionFailures.push(entry);
+  if(window.__hynixConnectionFailures.length>20) window.__hynixConnectionFailures.shift();
+  return reason;
 }
+
+function showConnectionFailure(error){
+  const reason=failureReason(error);
+  const isHardError=consecutiveFailures>=ERROR_AFTER_FAILURES;
+  $('liveState').textContent=isHardError?'● 연결 오류':'● 연결 지연';
+  $('liveState').className=`live ${isHardError?'error':'pending'}`;
+  $('updatePanel').className=`update-panel ${isHardError?'error':'pending'}`;
+
+  if(hasLiveData){
+    $('liveTime').textContent=isHardError
+      ? `최근 정상 데이터 유지 · ${consecutiveFailures}회 연속 실패 · ${reason}`
+      : `최근 정상 데이터 유지 · 재연결 중 (${consecutiveFailures}/${ERROR_AFTER_FAILURES})`;
+    return;
+  }
+
+  $('liveTime').textContent=isHardError?'실시간 API 연결 실패':'실시간 API 응답 지연 · 재연결 중';
+  $('updateTime').textContent=isHardError?'연결 오류':'연결 지연';
+  $('updateDate').textContent=reason;
+}
+
+function requestJsonp(){
+  return new Promise((resolve,reject)=>{
+    const callbackName=`__hynixLive_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const script=document.createElement('script');
+    let settled=false;
+    let timer=null;
+
+    const cleanup=()=>{
+      if(timer) clearTimeout(timer);
+      try{ delete window[callbackName]; }catch{}
+      script.remove();
+    };
+    const finish=(handler,value)=>{
+      if(settled) return;
+      settled=true;
+      cleanup();
+      handler(value);
+    };
+
+    window[callbackName]=(data)=>finish(resolve,data);
+    script.onerror=()=>finish(reject,new Error('jsonp_load_error'));
+    script.src=`${PUBLIC_API_URL}?callback=${encodeURIComponent(callbackName)}&_=${Date.now()}`;
+    script.async=true;
+    timer=setTimeout(()=>finish(reject,new Error('jsonp_timeout')),REQUEST_TIMEOUT_MS);
+    document.head.appendChild(script);
+  });
+}
+
+async function load(){
+  if(refreshRunning) return;
+  refreshRunning=true;
+  let lastError=null;
+
+  try{
+    for(let attempt=1;attempt<=2;attempt++){
+      try{
+        const data=await requestJsonp();
+        render(data);
+        hasLiveData=true;
+        consecutiveFailures=0;
+        return;
+      }catch(error){
+        lastError=error;
+        recordFailure(error,attempt);
+        if(attempt===1) await delay(RETRY_DELAY_MS);
+      }
+    }
+
+    consecutiveFailures+=1;
+    showConnectionFailure(lastError);
+  }finally{
+    refreshRunning=false;
+    setTimeout(load,REFRESH_MS);
+  }
+}
+
 load();
-setInterval(load,REFRESH_MS);
