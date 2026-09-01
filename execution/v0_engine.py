@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from broker_cli import BrokerCliError, KiwoomCliBroker
+from capacity import buy_capacity_errors, capacity_summary
 from safety import (
     ExecutionConfig,
     SYMBOL_RE,
@@ -141,6 +142,7 @@ def holding_qty(snapshot: dict[str, Any], symbol: str) -> int:
 
 
 def orderable_cash(snapshot: dict[str, Any]) -> int | None:
+    """Reference-only legacy cash field. Never use as the BUY capacity gate."""
     return parse_intish(_dict(snapshot.get("cash")).get("주문가능금액"))
 
 
@@ -161,8 +163,8 @@ def snapshot_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
     orders = _dict(snapshot.get("order_fill_status"))
     return {
         "broker_account": broker_account_mask(snapshot) or "(unknown)",
-        "orderable_cash": parse_intish(cash.get("주문가능금액")),
-        "estimated_deposit": parse_intish(cash.get("예수금")),
+        "orderable_cash_reference_only": parse_intish(cash.get("주문가능금액")),
+        "estimated_deposit_reference_only": parse_intish(cash.get("예수금")),
         "holding_count": len(holdings_rows(snapshot)),
         "broker_open_order_count": len(open_order_rows(snapshot)),
         "broker_fill_row_count": len(fill_rows(snapshot)),
@@ -223,8 +225,6 @@ def sync_open_intents(
         source_rows = matched_fills if matched_fills else matched_status
         filled_qty = sum(_row_filled_qty(row) for row in source_rows)
         if matched_status and not matched_fills:
-            # Account status may contain one aggregated row, so sum is valid;
-            # in the live test it returned exactly one row/order.
             filled_qty = sum(_row_filled_qty(row) for row in matched_status)
 
         if requested_qty > 0 and filled_qty >= requested_qty:
@@ -276,8 +276,6 @@ def sync_open_intents(
             )
             continue
 
-        # Broker propagation can lag immediately after submit.  This is not a
-        # reason to resend. Keep it non-terminal and require another read.
         new_status = "AWAITING_BROKER_VISIBILITY"
         store.update_intent(
             intent_id,
@@ -361,7 +359,11 @@ def semantic_order_errors(
     symbol: str,
     qty: int,
 ) -> list[str]:
-    """V0 position-aware last-mile checks before a live write."""
+    """V0 position-aware last-mile checks before a live write.
+
+    BUY capacity is intentionally NOT checked here. The sole capacity truth is
+    Kiwoom `orders chance` -> 최대주문가능금액, checked immediately before BUY.
+    """
     reasons: list[str] = []
     held = holding_qty(snapshot, symbol)
     side = side.upper()
@@ -370,10 +372,6 @@ def semantic_order_errors(
         reasons.append("V0_BUY_WOULD_STACK_EXISTING_POSITION")
     if side == "SELL" and held < qty:
         reasons.append("V0_SELL_QTY_EXCEEDS_HOLDING")
-    if side == "BUY":
-        cash = orderable_cash(snapshot)
-        if cash is None or cash <= 0:
-            reasons.append("NO_ORDERABLE_CASH")
     return reasons
 
 
@@ -444,6 +442,14 @@ def _extract_order_no(payload: Any) -> str | None:
     return text or None
 
 
+def _resolve_chance_price(args: argparse.Namespace) -> int | None:
+    if args.chance_price is not None:
+        return int(args.chance_price)
+    if args.order_type == "limit" and args.price:
+        return parse_intish(args.price)
+    return None
+
+
 def cmd_live_order(args: argparse.Namespace) -> int:
     if not args.i_understand_this_sends_a_live_order:
         print("[BLOCKED] explicit CLI acknowledgement flag is required.")
@@ -488,8 +494,37 @@ def cmd_live_order(args: argparse.Namespace) -> int:
         qty=args.qty,
     )
     if semantic_reasons:
-        print("[BLOCKED] position/cash gate: " + ", ".join(semantic_reasons))
+        print("[BLOCKED] position gate: " + ", ".join(semantic_reasons))
         return 2
+
+    # BUY capacity truth: Kiwoom symbol-specific `orders chance` only.
+    if side == "BUY":
+        chance_price = _resolve_chance_price(args)
+        if chance_price is None or chance_price <= 0:
+            print(
+                "[BLOCKED] BUY requires --chance-price for market orders "
+                "(limit orders may reuse --price)."
+            )
+            return 2
+        chance = broker.order_chance(
+            symbol=symbol,
+            side="buy",
+            price=chance_price,
+        )
+        cap_errors = buy_capacity_errors(
+            chance.payload,
+            qty=args.qty,
+            reference_price=chance_price,
+        )
+        cap = capacity_summary(chance.payload)
+        cap["reference_price"] = chance_price
+        cap["qty"] = args.qty
+        cap["required_notional"] = chance_price * args.qty
+        print("===== PRE-WRITE MAX ORDERABLE CAPACITY =====")
+        print(json.dumps(cap, ensure_ascii=False, indent=2))
+        if cap_errors:
+            print("[BLOCKED] max-orderable gate: " + ", ".join(cap_errors))
+            return 2
 
     assert_live_write_allowed(cfg)
 
@@ -564,6 +599,12 @@ def add_order_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--exchange", choices=["KRX", "NXT", "SOR"], default="KRX")
     parser.add_argument("--order-type", choices=["market", "limit"], default="market")
     parser.add_argument("--price", default=None)
+    parser.add_argument(
+        "--chance-price",
+        type=int,
+        default=None,
+        help="BUY capacity simulation reference price. Required for market BUY; limit BUY may reuse --price.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
