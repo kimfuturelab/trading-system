@@ -31,46 +31,47 @@ def load_runtime(auth_env: Path, exec_env: Path) -> ExecutionConfig:
 
 def _plan_from_row(row: dict[str, Any]) -> ExitPlan:
     return ExitPlan(
-        plan_id=str(row["plan_id"]),
-        symbol=str(row["symbol"]),
-        qty=int(row["qty"]),
-        entry_price=int(row["entry_price"]),
-        stop_price=int(row["stop_price"]),
+        plan_id=str(row["plan_id"]), symbol=str(row["symbol"]), qty=int(row["qty"]),
+        entry_price=int(row["entry_price"]), stop_price=int(row["stop_price"]),
         take_profit_price=int(row["take_profit_price"]),
         timecut_at=parse_iso_datetime(str(row["timecut_at"])),
     )
 
 
-def _post_snapshot(broker: Any) -> dict[str, Any]:
+def _pre_snapshot(broker: Any, exchange: str) -> dict[str, Any]:
+    exchange = exchange.upper()
+    if exchange == "KRX":
+        return broker.read_snapshot()
+    # NXT must use NXT holdings, while order/fill reads stay account-wide.
     return {
-        "holdings": broker.holdings(basis="total", exchange="KRX").payload,
+        "account": broker.account_list().payload,
+        "cash": broker.cash(basis="estimated").payload,
+        "holdings": broker.holdings(basis="total", exchange=exchange).payload,
+        "order_fill_status": broker.order_fill_status().payload,
+        "open_orders": broker.list_open_orders().payload,
+        "fills": broker.list_fills().payload,
+    }
+
+
+def _post_snapshot(broker: Any, exchange: str) -> dict[str, Any]:
+    return {
+        "holdings": broker.holdings(basis="total", exchange=exchange).payload,
         "open_orders": broker.list_open_orders().payload,
     }
 
 
 def run_live_exit_once(
-    *,
-    cfg: ExecutionConfig,
-    plan_id: str,
-    v1: ExitPlanStore,
-    v0: StateStore,
-    journal: ExitWriteJournal,
-    broker: Any,
+    *, cfg: ExecutionConfig, plan_id: str, v1: ExitPlanStore, v0: StateStore,
+    journal: ExitWriteJournal, broker: Any,
     quote_reader: Callable[..., QuoteSnapshot] = read_quote_snapshot,
+    exchange: str = "KRX",
 ) -> dict[str, Any]:
-    """Evaluate one EXIT_PLAN and, only if triggered and fully gated, SELL once.
+    """Evaluate one EXIT_PLAN and, if fully gated, SELL once on KRX or NXT."""
+    exchange = str(exchange or "").strip().upper()
+    if exchange not in {"KRX", "NXT"}:
+        raise RuntimeError("LIVE_EXIT_BLOCKED: exchange must be KRX|NXT")
 
-    Safety properties:
-    - live-write guard is checked before trigger/state mutation and again in the
-      lower live-sell adapter immediately before broker.submit_order.
-    - EXIT trigger is atomically reserved once.
-    - broker/local exact-holding/open-order gates run on a fresh snapshot.
-    - write-ahead journal is persisted before submit_order.
-    - timeout/ambiguous result is never retried here.
-    - post-submit reconciliation only READs broker holdings/open orders.
-    """
     assert_live_write_allowed(cfg)
-
     row = v1.get_plan(plan_id)
     if row is None:
         raise RuntimeError(f"LIVE_EXIT_BLOCKED: plan_id 없음: {plan_id}")
@@ -80,16 +81,17 @@ def run_live_exit_once(
     trigger_reserved_now = False
 
     if status in {"EXIT_ARMED", "POSITION"}:
-        quote = quote_reader(broker, symbol=str(row.get("symbol") or ""))
+        quote = quote_reader(
+            broker,
+            symbol=str(row.get("symbol") or ""),
+            exchange=exchange,
+        )
         decision = evaluate_exit_trigger(
-            _plan_from_row(row),
-            last_price=int(quote.last_price),
-            now=quote.captured_at,
+            _plan_from_row(row), last_price=int(quote.last_price), now=quote.captured_at,
         )
         if decision is None:
             return {
-                "action": "NO_TRIGGER",
-                "plan_id": plan_id,
+                "action": "NO_TRIGGER", "plan_id": plan_id, "exchange": exchange,
                 "last_price": int(quote.last_price),
                 "captured_at": quote.captured_at.isoformat(timespec="seconds"),
                 "broker_write": False,
@@ -100,69 +102,56 @@ def run_live_exit_once(
     else:
         raise RuntimeError(f"LIVE_EXIT_BLOCKED: unsupported plan status={status}")
 
-    # Fresh broker truth immediately before the SELL handoff.
-    snapshot = broker.read_snapshot()
+    snapshot = _pre_snapshot(broker, exchange)
     sync_open_intents(v0, snapshot)
     local_open_count = len(v0.open_intents())
 
     result = execute_live_sell_once(
-        cfg=cfg,
-        plan_row=row,
-        snapshot=snapshot,
-        local_open_intent_count=local_open_count,
-        broker=broker,
-        journal=journal,
-        mark_exit_submitted=v1.mark_exit_submitted,
+        cfg=cfg, plan_row=row, snapshot=snapshot,
+        local_open_intent_count=local_open_count, broker=broker, journal=journal,
+        mark_exit_submitted=v1.mark_exit_submitted, exchange=exchange,
     )
 
-    # One read-only post-write reconciliation. No resend is possible here.
     fresh_plan = v1.get_plan(plan_id)
     if fresh_plan is None:
         raise RuntimeError("LIVE_EXIT_RECONCILE_BLOCKED: plan disappeared")
-    post = _post_snapshot(broker)
+    post = _post_snapshot(broker, exchange)
     journal_row = journal.get(result.exit_intent_id)
     recon = reconcile_exit_write(
-        plan_row=fresh_plan,
-        snapshot=post,
-        journal_row=journal_row,
+        plan_row=fresh_plan, snapshot=post, journal_row=journal_row,
         mark_exit_submitted=v1.mark_exit_submitted,
         reconcile_holding=v1.reconcile_holding,
     )
     final_plan = v1.get_plan(plan_id)
 
     return {
-        "action": "SELL_SUBMITTED",
+        "action": "SELL_SUBMITTED", "exchange": exchange,
         "trigger_reserved_now": trigger_reserved_now,
-        "quote": None
-        if quote is None
-        else {
+        "quote": None if quote is None else {
             "last_price": int(quote.last_price),
             "captured_at": quote.captured_at.isoformat(timespec="seconds"),
+            "exchange": getattr(quote, "exchange", exchange),
+            "query_code": getattr(quote, "query_code", ""),
         },
         "pre_write_broker": snapshot_summary(snapshot),
         "local_open_intent_count": local_open_count,
-        "sell": asdict(result),
-        "journal": journal_row,
-        "post_reconcile": asdict(recon),
-        "final_plan": final_plan,
+        "sell": asdict(result), "journal": journal_row,
+        "post_reconcile": asdict(recon), "final_plan": final_plan,
     }
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="V1 one-shot live EXIT: evaluate -> gated KRX SELL once -> read-only reconcile"
+        description="V1 one-shot live EXIT: exchange quote -> gated SELL once -> reconcile"
     )
     p.add_argument("--plan-id", required=True)
+    p.add_argument("--exchange", choices=["KRX", "NXT"], default="KRX")
     p.add_argument("--auth-env", default=str(DEFAULT_AUTH_ENV))
     p.add_argument("--exec-env", default=str(DEFAULT_EXEC_ENV))
     p.add_argument("--v1-db", default=str(DEFAULT_V1_DB))
     p.add_argument("--write-db", default=str(DEFAULT_WRITE_DB))
     p.add_argument("--mode", choices=["real", "demo"], default="real")
-    p.add_argument(
-        "--i-understand-this-sends-a-live-sell",
-        action="store_true",
-        help="Required acknowledgement. Without this flag the command exits before broker/state work.",
-    )
+    p.add_argument("--i-understand-this-sends-a-live-sell", action="store_true")
     return p
 
 
@@ -179,15 +168,11 @@ def main() -> int:
     journal = ExitWriteJournal(Path(args.write_db))
 
     print("===== V1 ONE-SHOT LIVE EXIT =====")
-    print("[DANGER] This command can send exactly one real KRX SELL when every gate passes.")
+    print(f"[DANGER] This command can send exactly one real {args.exchange} SELL when every gate passes.")
     try:
         report = run_live_exit_once(
-            cfg=cfg,
-            plan_id=args.plan_id,
-            v1=v1,
-            v0=v0,
-            journal=journal,
-            broker=broker,
+            cfg=cfg, plan_id=args.plan_id, v1=v1, v0=v0,
+            journal=journal, broker=broker, exchange=args.exchange,
         )
     except (BrokerCliError, RuntimeError, ValueError) as exc:
         print(f"[BLOCKED/REVIEW] {type(exc).__name__}: {exc}")
@@ -197,12 +182,11 @@ def main() -> int:
     if report.get("action") == "NO_TRIGGER":
         print("[NO_TRIGGER] No broker write was sent.")
         return 0
-
     final = report.get("final_plan") or {}
     if final.get("status") == "CLOSED":
         print("[PASS] SELL acknowledged and broker holding is flat. V1 live exit CLOSED.")
     else:
-        print("[PENDING] SELL was acknowledged; broker truth is not flat yet. DO NOT RESEND. Reconcile only.")
+        print("[PENDING] SELL acknowledged; broker truth is not flat yet. DO NOT RESEND. Reconcile only.")
     return 0
 
 
