@@ -25,8 +25,8 @@ class KiwoomCliBroker:
     """Thin adapter around the already-validated `kiwoomcli` binary.
 
     V0 deliberately reuses the server CLI/auth path instead of introducing a
-    second REST client.  This keeps the first Python automation step as close
-    as possible to the manual path that passed the live 1-share roundtrip.
+    second REST client. This keeps Python automation close to the manual path
+    that already passed a live 1-share roundtrip.
     """
 
     def __init__(self, *, mode: str = "real", cli: str | None = None):
@@ -154,11 +154,10 @@ class KiwoomCliBroker:
         return self._require_api_ok(result)
 
     def order_fill_status(self) -> BrokerResult:
-        """Read today's order/fill status.
+        """Read today's account-level order/fill status.
 
         Kiwoom can return code 20 / '관련자료가없습니다' when there has been no
-        order for the day.  In V0 reconciliation that is a valid empty state,
-        not an infrastructure failure.
+        order for the day. In V0 reconciliation that is a valid empty state.
         """
         result = self._run(
             [
@@ -175,16 +174,50 @@ class KiwoomCliBroker:
         )
         return self._require_api_ok(result, allow_codes={0, 20})
 
+    def list_open_orders(self) -> BrokerResult:
+        """Read current unfilled/open orders via ka10075."""
+        result = self._run(
+            [
+                "domestic", "orders", "list-open",
+                "--stock-scope", "all",
+                "--side", "all",
+                "--exchange", "ALL",
+                "--mode", self.mode,
+                "--format", "json",
+                "--named",
+            ]
+        )
+        return self._require_api_ok(result, allow_codes={0, 20})
+
+    def list_fills(self) -> BrokerResult:
+        """Read today's fills via ka10076."""
+        result = self._run(
+            [
+                "domestic", "orders", "list-fills",
+                "--stock-scope", "all",
+                "--side", "all",
+                "--exchange", "ALL",
+                "--mode", self.mode,
+                "--format", "json",
+                "--named",
+            ]
+        )
+        return self._require_api_ok(result, allow_codes={0, 20})
+
     def read_snapshot(self) -> dict[str, Any]:
         account = self.account_list().payload
         cash = self.cash(basis="estimated").payload
         holdings = self.holdings(basis="total", exchange="KRX").payload
         orders = self.order_fill_status().payload
+        open_orders = self.list_open_orders().payload
+        fills = self.list_fills().payload
         return {
             "account": account,
             "cash": cash,
             "holdings": holdings,
             "order_fill_status": orders,
+            "open_orders": open_orders,
+            "fills": fills,
         }
 
     # --------------------- ORDER PREVIEW --------------------
@@ -248,7 +281,6 @@ class KiwoomCliBroker:
             mode=self.mode,
             confirm=False,
         )
-        # Preview output is intentionally human-readable text, not JSON.
         return self._run(args, expect_json=False)
 
     def submit_order(
@@ -262,12 +294,7 @@ class KiwoomCliBroker:
         price: str | None = None,
         confirm_live_write: bool = False,
     ) -> BrokerResult:
-        """Actual broker WRITE.
-
-        This method has an independent explicit boolean so an accidental call
-        without a deliberate live-write opt-in fails before `--confirm` is
-        even added to the CLI command.
-        """
+        """Actual broker WRITE with an independent explicit boolean guard."""
         if not confirm_live_write:
             raise BrokerCliError("실주문 차단: confirm_live_write=True가 필요합니다.")
         args = self._order_args(
