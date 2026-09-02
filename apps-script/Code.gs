@@ -1,5 +1,9 @@
-const SPREADSHEET_ID = '1POt3TiYivKugAWAeBsOLUAaPLiVGyPy2DrWNgkOvweU';
-const RAW_SHEET = '원시_TOP100';
+const TOP100_SPREADSHEET_ID = '1POt3TiYivKugAWAeBsOLUAaPLiVGyPy2DrWNgkOvweU';
+const TOP100_RAW_SHEET = '원시_TOP100';
+const SUPPLY_SPREADSHEET_ID = '1TT6r5yJGh3G4xRY6ygHIzD_r6iNKmGAbF4wFk3xQG5Q';
+const SUPPLY_LIVE_SHEET = '실시간_시장수급';
+const SUPPLY_RAW_SHEET = 'API_원시';
+const SUPPLY_DAILY_SHEET = '일간기록';
 
 /**
  * One-time setup helper.
@@ -29,11 +33,18 @@ function doPost(e) {
     const payload = JSON.parse(e.postData.contents);
     verifySecret_(payload.secret);
 
-    if (payload.type !== 'top100') {
-      return json_({ ok: false, error: 'unsupported_type', type: payload.type || null });
+    let result;
+    switch (payload.type) {
+      case 'top100':
+        result = writeTop100_(payload);
+        break;
+      case 'market_supply':
+        result = writeMarketSupply_(payload);
+        break;
+      default:
+        return json_({ ok: false, error: 'unsupported_type', type: payload.type || null });
     }
 
-    const result = writeTop100_(payload);
     return json_({ ok: true, ...result });
   } catch (err) {
     console.error(err && err.stack ? err.stack : err);
@@ -48,17 +59,14 @@ function verifySecret_(incoming) {
 }
 
 function writeTop100_(payload) {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  const sheet = ss.getSheetByName(RAW_SHEET);
-  if (!sheet) throw new Error(`Sheet not found: ${RAW_SHEET}`);
+  const ss = SpreadsheetApp.openById(TOP100_SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(TOP100_RAW_SHEET);
+  if (!sheet) throw new Error(`Sheet not found: ${TOP100_RAW_SHEET}`);
 
   const rows = Array.isArray(payload.rows) ? payload.rows : [];
   if (!rows.length) throw new Error('No rows supplied.');
   if (rows.length > 100) throw new Error(`Too many rows: ${rows.length}`);
 
-  // Existing 3.5 raw schema (A:N):
-  // 기준시각 | 순위 | 종목코드 | 종목명 | 시장 | 현재가 | 등락률(%) | 거래대금(억원)
-  // | 외국인 순매수 | 기관 순매수 | 프로그램 순매수 | 직전 순위 | 순위 변화 | 수집상태
   const values = rows.map(r => [
     r.captured_at || payload.captured_at || '',
     numOrBlank_(r.rank),
@@ -90,16 +98,129 @@ function writeTop100_(payload) {
   }
 
   return {
-    sheet: RAW_SHEET,
+    sheet: TOP100_RAW_SHEET,
     received: rows.length,
     captured_at: payload.captured_at || '',
     source: payload.source || '',
   };
 }
 
+function writeMarketSupply_(payload) {
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  if (!rows.length) throw new Error('No market_supply rows supplied.');
+  if (rows.length > 10) throw new Error(`Too many market_supply rows: ${rows.length}`);
+
+  const ss = SpreadsheetApp.openById(SUPPLY_SPREADSHEET_ID);
+  const live = ss.getSheetByName(SUPPLY_LIVE_SHEET);
+  const raw = ss.getSheetByName(SUPPLY_RAW_SHEET);
+  const daily = ss.getSheetByName(SUPPLY_DAILY_SHEET);
+  if (!live || !raw || !daily) throw new Error('Stage3 supply sheet structure is incomplete.');
+
+  const normalized = rows.map(r => {
+    const foreignNet = numOrBlank_(r.foreign_net);
+    const institutionNet = numOrBlank_(r.institution_net);
+    const programNet = numOrBlank_(r.program_net);
+    const numeric = [foreignNet, institutionNet, programNet].filter(v => typeof v === 'number');
+    const positiveCount = numeric.length === 3 ? numeric.filter(v => v > 0).length : '';
+    const gate = numeric.length !== 3 ? 'PENDING' : (positiveCount >= 2 ? 'PASS' : (positiveCount === 1 ? 'WAIT' : 'BLOCK'));
+    return {
+      capturedAt: String(r.captured_at || payload.captured_at || ''),
+      market: String(r.market || ''),
+      individualNet: numOrBlank_(r.individual_net),
+      foreignNet,
+      institutionNet,
+      programNet,
+      positiveCount,
+      gate,
+      investorApi: String(r.investor_api_id || 'ka10051'),
+      programApi: String(r.program_api_id || 'ka90005'),
+      status: String(r.status || 'OK'),
+      source: String(payload.source || 'kiwoom-rest'),
+      investorExchange: String(r.investor_exchange || ''),
+      programExchange: String(r.program_exchange || ''),
+      investorMarketCode: String(r.investor_market_code || ''),
+      programMarketCode: String(r.program_market_code || ''),
+      version: String(payload.collector_version || ''),
+      error: String(r.error || ''),
+      note: String(r.note || ''),
+    };
+  });
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    // API_원시: row 3 is header, latest payload starts at row 4.
+    const rawClearRows = Math.max(20, raw.getMaxRows() - 3);
+    raw.getRange(4, 1, rawClearRows, 16).clearContent();
+    const rawValues = normalized.map(r => [
+      r.capturedAt, r.market, r.individualNet, r.foreignNet, r.institutionNet, r.programNet,
+      r.investorApi, r.programApi, r.investorExchange, r.programExchange, r.status,
+      r.investorMarketCode, r.programMarketCode, r.version, r.error, r.note,
+    ]);
+    raw.getRange(4, 1, rawValues.length, 16).setValues(rawValues);
+
+    // 실시간_시장수급: fixed KOSPI/KOSDAQ rows 5/6. Preserve G/H sheet formulas.
+    normalized.forEach(r => {
+      const targetRow = r.market === 'KOSPI' ? 5 : (r.market === 'KOSDAQ' ? 6 : null);
+      if (!targetRow) return;
+      live.getRange(targetRow, 1, 1, 6).setValues([[
+        r.capturedAt, r.market, r.individualNet, r.foreignNet, r.institutionNet, r.programNet,
+      ]]);
+      live.getRange(targetRow, 9, 1, 4).setValues([[
+        r.investorApi, r.programApi, r.status, r.source,
+      ]]);
+    });
+
+    normalized.forEach(r => upsertDailySupply_(daily, r));
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+
+  return {
+    sheet: SUPPLY_LIVE_SHEET,
+    received: normalized.length,
+    captured_at: payload.captured_at || '',
+    source: payload.source || '',
+  };
+}
+
+function upsertDailySupply_(sheet, r) {
+  const dateKey = r.capturedAt ? r.capturedAt.slice(0, 10) : Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  const firstDataRow = 5;
+  const lastRow = sheet.getLastRow();
+  let targetRow = null;
+
+  if (lastRow >= firstDataRow) {
+    const values = sheet.getRange(firstDataRow, 1, lastRow - firstDataRow + 1, 3).getDisplayValues();
+    for (let i = 0; i < values.length; i++) {
+      if (String(values[i][0]) === dateKey && String(values[i][2]) === r.market) {
+        targetRow = firstDataRow + i;
+        break;
+      }
+    }
+  }
+
+  if (!targetRow) targetRow = Math.max(firstDataRow, lastRow + 1);
+  sheet.getRange(targetRow, 1, 1, 12).setValues([[
+    dateKey,
+    r.capturedAt,
+    r.market,
+    r.individualNet,
+    r.foreignNet,
+    r.institutionNet,
+    r.programNet,
+    r.positiveCount,
+    r.gate,
+    r.status,
+    r.version,
+    r.note || r.error,
+  ]]);
+}
+
 function numOrBlank_(v) {
   if (v === null || v === undefined || v === '') return '';
-  const n = Number(v);
+  const n = Number(String(v).replace(/,/g, ''));
   return Number.isFinite(n) ? n : '';
 }
 
