@@ -4,6 +4,7 @@ import os
 import sys
 import time
 from datetime import datetime, time as dt_time
+from zoneinfo import ZoneInfo
 from typing import Any
 
 import requests
@@ -12,6 +13,7 @@ from dotenv import load_dotenv
 from kiwoom_collector import KiwoomClient, Settings
 
 COLLECTOR_VERSION = "stage3-supply-v1"
+KST = ZoneInfo("Asia/Seoul")
 
 MARKETS = (
     {
@@ -33,6 +35,14 @@ def _number(value: Any) -> float | None:
     text = str(value).strip().replace(",", "")
     if not text:
         return None
+
+    # Kiwoom ka90005 can return negative values such as "--153032".
+    # Treat duplicated leading sign characters as one sign.
+    if text.startswith("--"):
+        text = "-" + text.lstrip("-")
+    elif text.startswith("++"):
+        text = "+" + text.lstrip("+")
+
     try:
         return float(text)
     except ValueError:
@@ -40,11 +50,11 @@ def _number(value: Any) -> float | None:
 
 
 def now_kst_string() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def today_yyyymmdd() -> str:
-    return datetime.now().strftime("%Y%m%d")
+    return datetime.now(KST).strftime("%Y%m%d")
 
 
 def post_kiwoom(client: KiwoomClient, api_id: str, path: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -227,7 +237,7 @@ def parse_hhmm(value: str, default: str) -> dt_time:
 
 
 def inside_active_window(start: dt_time, end: dt_time) -> bool:
-    now = datetime.now().time().replace(second=0, microsecond=0)
+    now = datetime.now(KST).time().replace(second=0, microsecond=0)
     return start <= now <= end
 
 
