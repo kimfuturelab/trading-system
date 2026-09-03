@@ -41,6 +41,15 @@ function doPost(e) {
       case 'market_supply':
         result = writeMarketSupply_(payload);
         break;
+      case 'stock_supply_live':
+        result = writeStockSupplyLive_(payload);
+        break;
+      case 'stock_supply_minute':
+        result = writeStockSupplyMinute_(payload);
+        break;
+      case 'stock_supply_final':
+        result = writeStockSupplyFinal_(payload);
+        break;
       default:
         return json_({ ok: false, error: 'unsupported_type', type: payload.type || null });
     }
