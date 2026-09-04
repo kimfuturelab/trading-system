@@ -8,12 +8,19 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
-TOKEN_CACHE = BASE_DIR / ".token_cache.json"
+KST = ZoneInfo("Asia/Seoul")
+TOKEN_CACHE = Path(
+    os.getenv(
+        "KIWOOM_TOKEN_CACHE",
+        str(Path.home() / ".cache" / "trading-system" / "kiwoom_token.json"),
+    )
+).expanduser()
 STATE_CACHE = BASE_DIR / ".rank_state.json"
 
 
@@ -35,9 +42,7 @@ def _int_number(value: Any, *, absolute: bool = False) -> int:
 
 
 def now_kst_string() -> str:
-    # Collector is expected to run on a Korea-time workstation.
-    # We intentionally write an explicit text timestamp for Sheet auditing.
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
 
 @dataclass
@@ -99,17 +104,38 @@ class KiwoomClient:
             expires_at = data.get("expires_at")
             if not token or not expires_at:
                 return None
-            expiry = datetime.strptime(expires_at, "%Y%m%d%H%M%S")
-            if datetime.now() >= expiry - timedelta(minutes=10):
+            expiry = datetime.strptime(str(expires_at), "%Y%m%d%H%M%S").replace(tzinfo=KST)
+            if datetime.now(KST) >= expiry - timedelta(minutes=10):
                 return None
             return str(token)
         except Exception:
             return None
 
-    def issue_token(self) -> str:
-        cached = self._load_cached_token()
-        if cached:
-            return cached
+    def invalidate_token(self, token: str | None = None) -> None:
+        """Remove only the token that actually failed.
+
+        If another collector already refreshed the shared cache, do not delete the
+        newer token just because this process received an 8005 on an older token.
+        """
+        try:
+            if not TOKEN_CACHE.exists():
+                return
+            if token:
+                try:
+                    current = json.loads(TOKEN_CACHE.read_text(encoding="utf-8")).get("token")
+                except Exception:
+                    current = None
+                if current and str(current) != str(token):
+                    return
+            TOKEN_CACHE.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def issue_token(self, *, force_refresh: bool = False) -> str:
+        if not force_refresh:
+            cached = self._load_cached_token()
+            if cached:
+                return cached
 
         url = f"{self.s.base_url}/oauth2/token"
         body = {
@@ -128,29 +154,64 @@ class KiwoomClient:
         if not token or not expires_at:
             raise RuntimeError(f"Unexpected token response: {data}")
 
-        TOKEN_CACHE.write_text(
+        TOKEN_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = TOKEN_CACHE.with_suffix(TOKEN_CACHE.suffix + f".{os.getpid()}.tmp")
+        temp_path.write_text(
             json.dumps({"token": token, "expires_at": expires_at}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        os.replace(temp_path, TOKEN_CACHE)
         return str(token)
 
+    @staticmethod
+    def _is_invalid_token_response(data: dict[str, Any]) -> bool:
+        if int(data.get("return_code", -1)) == 0:
+            return False
+        message = str(data.get("return_msg", ""))
+        return "8005" in message or "Token이 유효하지 않습니다" in message
+
+    def post_authorized(
+        self,
+        api_id: str,
+        path: str,
+        body: dict[str, Any],
+        *,
+        timeout: int = 20,
+    ) -> dict[str, Any]:
+        """POST an authenticated Kiwoom request with one 8005 recovery retry."""
+        last_data: dict[str, Any] | None = None
+        for attempt in range(2):
+            token = self.issue_token()
+            response = self.session.post(
+                f"{self.s.base_url}{path}",
+                headers={
+                    "authorization": f"Bearer {token}",
+                    "api-id": api_id,
+                },
+                json=body,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            last_data = data
+            if int(data.get("return_code", -1)) == 0:
+                return data
+            if attempt == 0 and self._is_invalid_token_response(data):
+                self.invalidate_token(token)
+                continue
+            raise RuntimeError(f"{api_id} error: {data}")
+        raise RuntimeError(f"{api_id} error after token refresh: {last_data}")
+
     def top_trading_value(self) -> list[dict[str, Any]]:
-        token = self.issue_token()
-        url = f"{self.s.base_url}/api/dostk/rkinfo"
-        headers = {
-            "authorization": f"Bearer {token}",
-            "api-id": "ka10032",
-        }
-        body = {
-            "mrkt_tp": self.s.market_type,
-            "mang_stk_incls": self.s.exclude_managed,
-            "stex_tp": self.s.exchange_type,
-        }
-        response = self.session.post(url, headers=headers, json=body, timeout=20)
-        response.raise_for_status()
-        data = response.json()
-        if int(data.get("return_code", -1)) != 0:
-            raise RuntimeError(f"ka10032 error: {data}")
+        data = self.post_authorized(
+            "ka10032",
+            "/api/dostk/rkinfo",
+            {
+                "mrkt_tp": self.s.market_type,
+                "mang_stk_incls": self.s.exclude_managed,
+                "stex_tp": self.s.exchange_type,
+            },
+        )
 
         rows = data.get("trde_prica_upper") or []
         if not isinstance(rows, list):
