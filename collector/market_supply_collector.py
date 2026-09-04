@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 from kiwoom_collector import KiwoomClient, Settings
 
-COLLECTOR_VERSION = "stage3-supply-v1"
+COLLECTOR_VERSION = "stage3-supply-v1-auth-recovery"
 KST = ZoneInfo("Asia/Seoul")
 
 MARKETS = (
@@ -36,8 +36,6 @@ def _number(value: Any) -> float | None:
     if not text:
         return None
 
-    # Kiwoom ka90005 can return negative values such as "--153032".
-    # Treat duplicated leading sign characters as one sign.
     if text.startswith("--"):
         text = "-" + text.lstrip("-")
     elif text.startswith("++"):
@@ -58,35 +56,10 @@ def today_yyyymmdd() -> str:
 
 
 def post_kiwoom(client: KiwoomClient, api_id: str, path: str, body: dict[str, Any]) -> dict[str, Any]:
-    token = client.issue_token()
-    response = client.session.post(
-        f"{client.s.base_url}{path}",
-        headers={
-            "authorization": f"Bearer {token}",
-            "api-id": api_id,
-        },
-        json=body,
-        timeout=20,
-    )
-    response.raise_for_status()
-    data = response.json()
-    if int(data.get("return_code", -1)) != 0:
-        raise RuntimeError(f"{api_id} error: {data}")
-    return data
+    return client.post_authorized(api_id, path, body, timeout=20)
 
 
 def fetch_market_investor_supply(client: KiwoomClient, market_code: str) -> dict[str, Any]:
-    """Fetch KOSPI/KOSDAQ aggregate individual/foreign/institution net buying.
-
-    Kiwoom REST ka10051:
-      - mrkt_tp: 0 KOSPI / 1 KOSDAQ
-      - amt_qty_tp: 0 amount / 1 quantity
-      - stex_tp: 1 KRX / 2 NXT / 3 integrated
-
-    V1 intentionally uses KRX regular-market values so the source is stable and
-    matches the official documented request example. The sign is the trading Gate;
-    raw units are preserved without an arbitrary conversion.
-    """
     data = post_kiwoom(
         client,
         "ka10051",
@@ -102,7 +75,6 @@ def fetch_market_investor_supply(client: KiwoomClient, market_code: str) -> dict
     if not isinstance(rows, list) or not rows:
         raise RuntimeError(f"ka10051 returned no rows for market={market_code}")
 
-    # The aggregate market row is normally the first row and contains '종합'.
     aggregate = next((r for r in rows if "종합" in str(r.get("inds_nm", ""))), rows[0])
     return {
         "individual_net": _number(aggregate.get("ind_netprps")),
@@ -114,12 +86,6 @@ def fetch_market_investor_supply(client: KiwoomClient, market_code: str) -> dict
 
 
 def fetch_market_program_supply(client: KiwoomClient, program_market_code: str) -> dict[str, Any]:
-    """Fetch latest market-wide program net buying from ka90005.
-
-    ka90005 returns time-series rows. We select the row with the greatest HHMMSS
-    value available in the response and use all_netprps (amount, KRW million in the
-    official documentation) as the program net-buy input.
-    """
     data = post_kiwoom(
         client,
         "ka90005",
@@ -174,7 +140,6 @@ def build_market_row(client: KiwoomClient, config: dict[str, str], captured_at: 
     except Exception as exc:
         errors.append(f"ka10051:{exc}")
 
-    # Small spacing keeps endpoint calls comfortably below domestic-stock query limits.
     time.sleep(0.25)
 
     try:
@@ -237,8 +202,8 @@ def parse_hhmm(value: str, default: str) -> dt_time:
 
 
 def inside_active_window(start: dt_time, end: dt_time) -> bool:
-    now = datetime.now(KST).time().replace(second=0, microsecond=0)
-    return start <= now <= end
+    current = datetime.now(KST).time().replace(second=0, microsecond=0)
+    return start <= current <= end
 
 
 def main() -> int:
