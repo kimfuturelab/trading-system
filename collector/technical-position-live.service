@@ -1,0 +1,19 @@
+[Unit]
+Description=Trading System Technical Position LIVE Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=eogus1215
+WorkingDirectory=/home/eogus1215/trading-system-stage3
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/eogus1215/api-read-v2.env
+EnvironmentFile=/home/eogus1215/technical-position.env
+ExecStart=/home/eogus1215/trading-system-stage3/collector/.venv/bin/python /home/eogus1215/trading-system-stage3/collector/technical_position_collector.py --loop
+Restart=always
+RestartSec=10
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
