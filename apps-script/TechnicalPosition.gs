@@ -13,6 +13,7 @@ function writeTechnicalPosition_(payload) {
   lock.waitLock(15000);
   try {
     rows.forEach(r => upsertTechnicalPosition_(sheet, r, payload));
+    sortTechnicalPositionDaily_(sheet);
     SpreadsheetApp.flush();
   } finally {
     lock.releaseLock();
@@ -51,9 +52,12 @@ function upsertTechnicalPosition_(sheet, r, payload) {
 
   const capturedAt = String(r.captured_at || payload.captured_at || '');
   const status = String(r.status || 'OK');
-  const note = [r.note || '', r.error ? `error=${r.error}` : '', payload.collector_version ? `version=${payload.collector_version}` : '']
-    .filter(Boolean)
-    .join(' | ');
+  const note = [
+    payload.source ? `source=${payload.source}` : '',
+    r.note || '',
+    r.error ? `error=${r.error}` : '',
+    payload.collector_version ? `version=${payload.collector_version}` : ''
+  ].filter(Boolean).join(' | ');
 
   sheet.getRange(targetRow, 1, 1, 11).setValues([[
     dateKey, capturedAt, market, String(r.industry_code || ''),
@@ -68,4 +72,12 @@ function upsertTechnicalPosition_(sheet, r, payload) {
   ]]);
 
   sheet.getRange(targetRow, 29, 1, 3).setValues([[capturedAt, status, note]]);
+}
+
+function sortTechnicalPositionDaily_(sheet) {
+  const firstDataRow = 4;
+  const lastRow = sheet.getLastRow();
+  if (lastRow < firstDataRow) return;
+  sheet.getRange(firstDataRow, 1, lastRow - firstDataRow + 1, 31)
+    .sort([{column: 1, ascending: true}, {column: 3, ascending: true}]);
 }
