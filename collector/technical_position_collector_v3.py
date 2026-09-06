@@ -5,17 +5,45 @@ from dataclasses import replace
 import technical_position_collector as base
 
 
-COLLECTOR_VERSION = "technical-position-live-v3-session-fix"
+COLLECTOR_VERSION = "technical-position-live-v3-session-fix2"
+
+
+def _has_live_sector_values(client, cfg: dict[str, str]) -> bool:
+    """Return True when ka20001 shows a live/open session for this market."""
+    data = base.fetch_sector_current(
+        client,
+        cfg["market_type"],
+        cfg["industry_code"],
+    )
+
+    values = [
+        base._index_price(data.get("cur_prc")),
+        base._index_price(data.get("open_pric")),
+        base._index_price(data.get("high_pric")),
+        base._index_price(data.get("low_pric")),
+    ]
+
+    return all(value is not None and value > 0 for value in values)
 
 
 def session_started_live(client, target_date: str) -> bool:
-    """Confirm an active trading session from intraday data first.
+    """Confirm an active trading session without depending on ka20006 alone.
 
-    ka20006 daily rows can lag intraday. Using it as the only 09:00 session gate
-    can incorrectly classify a normal trading day as closed. Prefer same-day
-    60-minute bars and keep ka20006 only as a fallback.
+    Priority:
+      1) ka20001 current/open/high/low are all live and non-zero
+      2) same-day native 60-minute bar exists
+      3) same-day daily row exists (fallback / after close)
+
+    This prevents a normal trading day from being dropped because the daily-bar
+    endpoint has not exposed today's row yet.
     """
     for cfg in base.MARKETS:
+        try:
+            if _has_live_sector_values(client, cfg):
+                continue
+        except Exception:
+            pass
+
         minute_rows = base.fetch_60m(client, cfg["industry_code"], target_date)
         has_today_intraday = False
 
@@ -40,8 +68,8 @@ _original_load_runtime = base.load_runtime
 
 def load_runtime_keep_probing():
     settings, runtime = _original_load_runtime()
-    # Never give up on a weekday at 09:20. Keep probing until the live session
-    # ends, so delayed Kiwoom session evidence cannot suppress the whole day.
+    # Never give up at 09:20. Keep probing through the live session so delayed
+    # exchange/API evidence cannot suppress the whole trading day.
     runtime = replace(runtime, session_confirm_until=runtime.live_end)
     return settings, runtime
 
