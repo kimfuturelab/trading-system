@@ -50,6 +50,9 @@ function doPost(e) {
       case 'stock_supply_final':
         result = writeStockSupplyFinal_(payload);
         break;
+      case 'technical_position':
+        result = writeTechnicalPosition_(payload);
+        break;
       default:
         return json_({ ok: false, error: 'unsupported_type', type: payload.type || null });
     }
