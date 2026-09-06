@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
 from datetime import datetime, time as dt_time
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from typing import Any
 
@@ -12,8 +14,14 @@ from dotenv import load_dotenv
 
 from kiwoom_collector import KiwoomClient, Settings
 
-COLLECTOR_VERSION = "stage3-supply-v1-auth-recovery"
+COLLECTOR_VERSION = "stage3-supply-v1-auth-recovery-watchdog"
 KST = ZoneInfo("Asia/Seoul")
+HEALTH_FILE = Path(
+    os.getenv(
+        "STAGE3_SUPPLY_HEALTH_FILE",
+        str(Path.home() / ".cache" / "trading-system" / "stage3_market_supply_health.json"),
+    )
+).expanduser()
 
 MARKETS = (
     {
@@ -53,6 +61,40 @@ def now_kst_string() -> str:
 
 def today_yyyymmdd() -> str:
     return datetime.now(KST).strftime("%Y%m%d")
+
+
+def write_health(
+    status: str,
+    detail: str = "",
+    *,
+    captured_at: str | None = None,
+    rows: list[dict[str, Any]] | None = None,
+) -> None:
+    payload = {
+        "updated_at": now_kst_string(),
+        "captured_at": captured_at or "",
+        "status": status,
+        "detail": detail,
+        "collector_version": COLLECTOR_VERSION,
+        "markets": [
+            {
+                "market": str(r.get("market", "")),
+                "status": str(r.get("status", "")),
+                "error": str(r.get("error", "")),
+            }
+            for r in (rows or [])
+        ],
+    }
+    try:
+        HEALTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = HEALTH_FILE.with_suffix(HEALTH_FILE.suffix + f".{os.getpid()}.tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(tmp, HEALTH_FILE)
+    except Exception as exc:
+        print(f"HEALTH WRITE ERROR: {exc}", file=sys.stderr)
 
 
 def post_kiwoom(client: KiwoomClient, api_id: str, path: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -192,6 +234,19 @@ def run_once(settings: Settings) -> None:
 
     result = send_market_supply(rows, settings)
     summary = ", ".join(f"{r['market']}={r['status']}" for r in rows)
+
+    bad_rows = [r for r in rows if str(r.get("status", "")).upper() != "OK"]
+    if bad_rows:
+        detail = " || ".join(
+            f"{r.get('market')}:{r.get('status')}:{r.get('error')}" for r in bad_rows
+        )
+        overall_status = "ERROR" if any(
+            str(r.get("status", "")).upper() == "ERROR" for r in bad_rows
+        ) else "PENDING"
+        write_health(overall_status, detail, captured_at=captured_at, rows=rows)
+    else:
+        write_health("OK", summary, captured_at=captured_at, rows=rows)
+
     print(f"[{captured_at}] market_supply sent {len(rows)} rows | {summary} | sheet={result.get('sheet')}")
 
 
@@ -215,10 +270,12 @@ def main() -> int:
         active_end = parse_hhmm(os.getenv("SUPPLY_ACTIVE_END", "15:40"), "15:40")
     except Exception as exc:
         print(f"CONFIG ERROR: {exc}", file=sys.stderr)
+        write_health("ERROR", f"CONFIG ERROR: {exc}")
         return 2
 
     if poll_seconds < 30:
         print("CONFIG ERROR: SUPPLY_POLL_SECONDS must be >= 30", file=sys.stderr)
+        write_health("ERROR", "SUPPLY_POLL_SECONDS must be >= 30")
         return 2
 
     loop = "--loop" in sys.argv
@@ -231,6 +288,7 @@ def main() -> int:
             return 0
         except Exception as exc:
             print(f"RUN ERROR: {exc}", file=sys.stderr)
+            write_health("ERROR", f"RUN ERROR: {exc}")
             if not loop:
                 return 1
 
