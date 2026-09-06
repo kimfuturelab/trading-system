@@ -1,0 +1,16 @@
+[Unit]
+Description=Stage3 Market Supply Telegram Watchdog
+After=network-online.target stage3-supply.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=eogus1215
+WorkingDirectory=/home/eogus1215/trading-system-stage3/collector
+ExecStart=/home/eogus1215/trading-system-stage3/collector/.venv/bin/python /home/eogus1215/trading-system-stage3/collector/stage3_supply_watchdog.py --loop
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
