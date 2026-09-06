@@ -47,16 +47,28 @@ def load_material_runtime() -> tuple[str, str]:
     else:
         shared_env = Path.home() / "technical-position.env"
         if shared_env.exists():
-            load_dotenv(shared_env, override=True)
+            load_dotenv(shared_env, override=False)
 
-    webhook_url = _env_first("MATERIAL_WEBHOOK_URL", "TECH_POSITION_WEBHOOK_URL")
-    ingest_secret = _env_first("MATERIAL_INGEST_SECRET", "TECH_POSITION_INGEST_SECRET")
+    webhook_url = _env_first(
+        "MATERIAL_WEBHOOK_URL",
+        "TECH_POSITION_WEBHOOK_URL",
+        "SHEETS_WEBHOOK_URL",
+    )
+    ingest_secret = _env_first(
+        "MATERIAL_INGEST_SECRET",
+        "TECH_POSITION_INGEST_SECRET",
+        "INGEST_SECRET",
+    )
 
     missing = []
     if not webhook_url:
-        missing.append("MATERIAL_WEBHOOK_URL or TECH_POSITION_WEBHOOK_URL")
+        missing.append(
+            "MATERIAL_WEBHOOK_URL or TECH_POSITION_WEBHOOK_URL or SHEETS_WEBHOOK_URL"
+        )
     if not ingest_secret:
-        missing.append("MATERIAL_INGEST_SECRET or TECH_POSITION_INGEST_SECRET")
+        missing.append(
+            "MATERIAL_INGEST_SECRET or TECH_POSITION_INGEST_SECRET or INGEST_SECRET"
+        )
     if missing:
         raise RuntimeError("Missing required environment values: " + ", ".join(missing))
 
