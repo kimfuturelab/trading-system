@@ -74,8 +74,10 @@ if (( WEEKDAY <= 5 )); then
     echo "KST $TODAY $HHMM -> LIVE recovery"
     "$VENV_PY" "$COLLECTOR_DIR/technical_position_collector_v3.py" \
       --base-date "$TODAY" || ONESHOT_RC=$?
+  elif (( 10#$HHMM >= 850 )); then
+    echo "KST $TODAY $HHMM -> PREMARKET window; continuous service will create/update today's PREP rows now"
   else
-    echo "KST $TODAY $HHMM -> before market open; service will create rows automatically after live session is confirmed"
+    echo "KST $TODAY $HHMM -> before 08:50 PREP; continuous service will create/update today's PREP rows at 08:50"
   fi
 else
   echo "Weekend -> no trading-day row is created"
