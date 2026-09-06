@@ -53,9 +53,6 @@ function doPost(e) {
       case 'technical_position':
         result = writeTechnicalPosition_(payload);
         break;
-      case 'material_read':
-        result = readMaterialEvidence_(payload);
-        break;
       default:
         return json_({ ok: false, error: 'unsupported_type', type: payload.type || null });
     }
@@ -164,7 +161,6 @@ function writeMarketSupply_(payload) {
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
   try {
-    // API_원시: row 3 is header, latest payload starts at row 4.
     const rawClearRows = Math.max(20, raw.getMaxRows() - 3);
     raw.getRange(4, 1, rawClearRows, 16).clearContent();
     const rawValues = normalized.map(r => [
@@ -174,7 +170,6 @@ function writeMarketSupply_(payload) {
     ]);
     raw.getRange(4, 1, rawValues.length, 16).setValues(rawValues);
 
-    // 실시간_시장수급: fixed KOSPI/KOSDAQ rows 5/6. Preserve G/H sheet formulas.
     normalized.forEach(r => {
       const targetRow = r.market === 'KOSPI' ? 5 : (r.market === 'KOSDAQ' ? 6 : null);
       if (!targetRow) return;
