@@ -3,6 +3,12 @@ const MATERIAL_DECISION_SHEET = '05_재료판정';
 const MATERIAL_SNAPSHOT_SHEET = '06_판단스냅샷';
 const MATERIAL_TZ = 'Asia/Seoul';
 
+function testReadMaterialEvidence() {
+  const result = readMaterialEvidence_({ consumer: 'apps-script-test' });
+  Logger.log(JSON.stringify(result, null, 2));
+  return result;
+}
+
 function readMaterialEvidence_(payload) {
   const ss = SpreadsheetApp.openById(MATERIAL_SPREADSHEET_ID);
   const decision = ss.getSheetByName(MATERIAL_DECISION_SHEET);
@@ -88,7 +94,7 @@ function readMaterialState_(sheet) {
     accumulated_news_reason: accumulatedReason,
     intraday_score: intradayScore,
     intraday_reason: intradayReason,
-    trade_date: Utilities.formatDate(new Date(asOfTime), MATERIAL_TZ, 'yyyy-MM-dd'),
+    trade_date: asOfTime.slice(0, 10),
   };
 }
 
