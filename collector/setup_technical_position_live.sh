@@ -75,7 +75,7 @@ path.chmod(0o600)
 
 print(f"ENV_FILE={path}")
 print("ENV_PERMISSION=600")
-print("TECH_POSITION_INGEST_SECRET=" + secret)
+print("SECRET_STATUS=SET")
 PY
 
 echo
@@ -83,8 +83,4 @@ echo "=== RESULT ==="
 echo "CODE=PASS"
 echo "SERVICE_NOT_STARTED=YES"
 echo "BACKUP_DIR=$BACKUP_DIR"
-echo
-echo "IMPORTANT: copy only the TECH_POSITION_INGEST_SECRET value above"
-echo "into Apps Script Project Settings > Script properties"
-echo "key: TECH_POSITION_INGEST_SECRET"
-echo "Do not paste the secret into chat."
+echo "SECRET_NOT_PRINTED=YES"
