@@ -10,7 +10,7 @@ WorkingDirectory=/home/eogus1215/trading-system-stage3
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/home/eogus1215/api-read-v2.env
 EnvironmentFile=/home/eogus1215/technical-position.env
-ExecStart=/home/eogus1215/trading-system-stage3/collector/.venv/bin/python /home/eogus1215/trading-system-stage3/collector/technical_position_collector.py --loop
+ExecStart=/home/eogus1215/trading-system-stage3/collector/.venv/bin/python /home/eogus1215/trading-system-stage3/collector/technical_position_collector_v3.py --loop
 Restart=always
 RestartSec=10
 TimeoutStopSec=20
