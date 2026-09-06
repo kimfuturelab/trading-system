@@ -53,6 +53,9 @@ function doPost(e) {
       case 'technical_position':
         result = writeTechnicalPosition_(payload);
         break;
+      case 'material_read':
+        result = readMaterialEvidence_(payload);
+        break;
       default:
         return json_({ ok: false, error: 'unsupported_type', type: payload.type || null });
     }
