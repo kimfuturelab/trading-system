@@ -24,9 +24,13 @@ def now_kst() -> datetime:
     return datetime.now(KST)
 
 
+def is_weekday() -> bool:
+    return now_kst().weekday() < 5
+
+
 def inside_active_window(start: dt_time, end: dt_time) -> bool:
     current = now_kst().time().replace(second=0, microsecond=0)
-    return start <= current <= end
+    return is_weekday() and start <= current <= end
 
 
 def parse_dt(value: str | None) -> datetime | None:
@@ -57,7 +61,7 @@ def evaluate_once(
     health = read_health(health_file)
     if not health:
         manager.problem(
-            "3. 수급 헬스파일 없음",
+            "오늘 3. 수급 데이터 미수신",
             str(health_file),
             alert_after_seconds=stale_seconds,
         )
@@ -68,6 +72,16 @@ def evaluate_once(
         manager.problem(
             "3. 수급 헬스시각 해석 실패",
             str(health.get("updated_at", "")),
+            alert_after_seconds=stale_seconds,
+        )
+        return
+
+    # At a new session open, yesterday/Friday's heartbeat is expected. Give the
+    # collector the normal stale grace period instead of firing immediately.
+    if updated_at.date() != now.date():
+        manager.problem(
+            "오늘 3. 수급 데이터 미수신",
+            f"이전 헬스: {health.get('updated_at')}",
             alert_after_seconds=stale_seconds,
         )
         return
@@ -105,8 +119,12 @@ def main() -> int:
     ).expanduser()
     stale_seconds = int(os.getenv("SUPPLY_ALERT_STALE_SECONDS", "180"))
     check_seconds = int(os.getenv("SUPPLY_ALERT_CHECK_SECONDS", "20"))
-    active_start = parse_hhmm(os.getenv("SUPPLY_ACTIVE_START", "08:50"), "08:50")
-    active_end = parse_hhmm(os.getenv("SUPPLY_ACTIVE_END", "15:40"), "15:40")
+    active_start = parse_hhmm(
+        os.getenv("SUPPLY_ALERT_ACTIVE_START", "09:00"), "09:00"
+    )
+    active_end = parse_hhmm(
+        os.getenv("SUPPLY_ALERT_ACTIVE_END", "15:35"), "15:35"
+    )
 
     if stale_seconds < 60:
         print("CONFIG ERROR: SUPPLY_ALERT_STALE_SECONDS must be >= 60", file=sys.stderr)
