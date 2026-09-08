@@ -1,5 +1,6 @@
 const HYNIX_KRX_REFERENCE_SHEET = 'KRX_공식기준값';
 const HYNIX_KRX_CODE = '000660';
+const HYNIX_KRX_NAME = 'SK하이닉스';
 const HYNIX_KRX_ENDPOINT = 'https://data-dbg.krx.co.kr/svc/apis/sto/stk_bydd_trd';
 const HYNIX_KRX_TZ = 'Asia/Seoul';
 const HYNIX_KRX_KEY_PROPERTY = 'KRX_AUTH_KEY';
@@ -46,6 +47,7 @@ function refreshHynixKrxReference() {
     let lastError = '';
 
     // Search backwards because weekends/holidays have no daily row.
+    // The first KRX row found is the latest official daily row before today.
     for (let offset = 1; offset <= 10; offset++) {
       const d = new Date(now.getTime() - offset * 24 * 60 * 60 * 1000);
       const basDd = Utilities.formatDate(d, HYNIX_KRX_TZ, 'yyyyMMdd');
@@ -76,7 +78,7 @@ function refreshHynixKrxReference() {
 
     const serviceDateObj = dateOnlyKst_(serviceDate);
     const receivedAt = new Date();
-    const name = String(official.ISU_NM || 'SK하이닉스').trim();
+    const name = String(official.ISU_NM || HYNIX_KRX_NAME).trim();
     const values = [[
       serviceDateObj,
       HYNIX_KRX_CODE,
@@ -88,7 +90,7 @@ function refreshHynixKrxReference() {
       receivedAt,
       'OK',
       'KRX_OPEN_API / 유가증권 일별매매정보',
-      'BAS_DD=' + String(official.BAS_DD || '') + ' / ISU_SRT_CD=' + String(official.ISU_SRT_CD || ''),
+      'BAS_DD=' + String(official.BAS_DD || '') + ' / ISU_CD=' + String(official.ISU_CD || ''),
       '공식 기준값. fallback 없음'
     ]];
 
@@ -111,12 +113,15 @@ function refreshHynixKrxReference() {
   }
 }
 
+/**
+ * KRX OPEN API daily-stock request.
+ * Contract: GET ?basDd=YYYYMMDD with AUTH_KEY request header.
+ */
 function fetchHynixKrxDailyRow_(key, basDd) {
-  const response = UrlFetchApp.fetch(HYNIX_KRX_ENDPOINT, {
-    method: 'post',
-    contentType: 'application/json; charset=utf-8',
+  const url = HYNIX_KRX_ENDPOINT + '?basDd=' + encodeURIComponent(basDd);
+  const response = UrlFetchApp.fetch(url, {
+    method: 'get',
     headers: { AUTH_KEY: key },
-    payload: JSON.stringify({ basDd: basDd }),
     muteHttpExceptions: true,
     followRedirects: true
   });
@@ -131,20 +136,24 @@ function fetchHynixKrxDailyRow_(key, basDd) {
   } catch (err) {
     throw new Error('KRX_NON_JSON_RESPONSE');
   }
+
   const rows = Array.isArray(json.OutBlock_1) ? json.OutBlock_1 : [];
   if (!rows.length) return null;
 
   return rows.find(function (row) {
     const shortCode = String(row.ISU_SRT_CD || '').replace(/[^0-9]/g, '');
     const fullCode = String(row.ISU_CD || '').replace(/[^0-9]/g, '');
-    return shortCode === HYNIX_KRX_CODE || fullCode.endsWith(HYNIX_KRX_CODE);
+    const name = String(row.ISU_NM || '').replace(/\s/g, '');
+    return shortCode === HYNIX_KRX_CODE ||
+      fullCode.indexOf(HYNIX_KRX_CODE) !== -1 ||
+      name === HYNIX_KRX_NAME;
   }) || null;
 }
 
 function writeHynixKrxFailure_(sheet, reason) {
   const serviceDate = Utilities.formatDate(new Date(), HYNIX_KRX_TZ, 'yyyy-MM-dd');
   sheet.getRange('A4:L4').clearContent();
-  sheet.getRange('A4:C4').setValues([[dateOnlyKst_(serviceDate), HYNIX_KRX_CODE, 'SK하이닉스']]);
+  sheet.getRange('A4:C4').setValues([[dateOnlyKst_(serviceDate), HYNIX_KRX_CODE, HYNIX_KRX_NAME]]);
   sheet.getRange('I4:L4').setValues([[
     'KRX_ERROR',
     'KRX_OPEN_API / 유가증권 일별매매정보',
