@@ -145,6 +145,10 @@ class TelegramAlertManager:
             print(f"TELEGRAM ALERT ERROR: {exc}", file=sys.stderr)
             return False
 
+    def send(self, text: str) -> bool:
+        """Send one plain Telegram message immediately."""
+        return self._send(text)
+
     def problem(
         self,
         reason: str,
