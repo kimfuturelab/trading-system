@@ -39,6 +39,7 @@ def env_first(*names: str) -> str:
 def load_runtime_env() -> tuple[str, str, int]:
     load_dotenv(BASE_DIR / ".env", override=False)
     for path in (
+        Path.home() / "stage3-supply.env",
         Path.home() / "api-read-v2.env",
         Path.home() / "technical-position.env",
     ):
