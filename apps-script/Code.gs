@@ -20,8 +20,18 @@ function setIngestSecretOnce() {
   PropertiesService.getScriptProperties().setProperty('INGEST_SECRET', secret);
 }
 
-function doGet() {
-  return json_({ ok: true, service: 'trading-system-ingest', ts: new Date().toISOString() });
+function doGet(e) {
+  try {
+    const type = e && e.parameter ? String(e.parameter.type || '') : '';
+    if (type === 'trading_alert_packet') {
+      verifySecret_(e && e.parameter ? e.parameter.secret : '');
+      return json_(buildTradingAlertPacket_());
+    }
+    return json_({ ok: true, service: 'trading-system-ingest', ts: new Date().toISOString() });
+  } catch (err) {
+    console.error(err && err.stack ? err.stack : err);
+    return json_({ ok: false, error: String(err && err.message ? err.message : err) });
+  }
 }
 
 function doPost(e) {
@@ -238,4 +248,335 @@ function json_(obj) {
   return ContentService
     .createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+
+// -----------------------------------------------------------------------------
+// SK Hynix trading alert packet | PENDING values are excluded, never fail-closed.
+// Source of Truth: trading master 재수차_액션레벨_V1 (2026-09-11+).
+// -----------------------------------------------------------------------------
+const ALERT_STAGE0_SPREADSHEET_ID = '1u0YBIicGrbA07ND2fzn7vI-kq3ZJqLmhwntgv12M1GU';
+const ALERT_STAGE0_SHEET = '0_운용시작_게이트_V1';
+const ALERT_REGIME_SPREADSHEET_ID = '1FTmoK13a9COaIyUju89w0GGWzR6W7CuPORJLmhbQ6Wg';
+const ALERT_REGIME_SHEET = '시장국면_개선판';
+const ALERT_STAGE2_SPREADSHEET_ID = '1KR5RGAplOjsSnUYnb8Ati0w4LEQJkYMBNkFwCiwJ2js';
+const ALERT_STAGE2_SHEET = '1_매매톨게이트_DB_신버전';
+const ALERT_MATERIAL_SPREADSHEET_ID = '1hwbzCC40rDrBWzIdSOT38oeSm9WBGkicv7oNLLMD5J0';
+const ALERT_MATERIAL_SHEET = '05_재료판정';
+const ALERT_MONEYFLOW_SHEET = '자금흐름_대시보드';
+const ALERT_TECH_SPREADSHEET_ID = '13BOm_pS5ultKzoBm9fbtUF8zPgfb3PK5i2ArDXZbPoE';
+const ALERT_TECH_SHEET = '11_DAILY_기술적위치';
+
+function alertTodayIso_() {
+  return Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+function alertNowText_() {
+  return Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss');
+}
+
+function alertNormalizeDate_(value) {
+  if (value instanceof Date) {
+    return Utilities.formatDate(value, 'Asia/Seoul', 'yyyy-MM-dd');
+  }
+  const text = String(value || '').trim();
+  const m = text.match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+  if (!m) return '';
+  return m[1] + '-' + String(Number(m[2])).padStart(2, '0') + '-' + String(Number(m[3])).padStart(2, '0');
+}
+
+function alertFindTodayRow_(sheet, startRow, columnCount) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < startRow) return null;
+  const values = sheet.getRange(startRow, 1, lastRow - startRow + 1, columnCount).getValues();
+  const display = sheet.getRange(startRow, 1, lastRow - startRow + 1, columnCount).getDisplayValues();
+  const today = alertTodayIso_();
+  for (let i = 0; i < values.length; i++) {
+    if (alertNormalizeDate_(values[i][0]) === today || alertNormalizeDate_(display[i][0]) === today) {
+      return { values: values[i], display: display[i], row: startRow + i };
+    }
+  }
+  return null;
+}
+
+function alertFindLabelValue_(sheet, label, startRow, endRow) {
+  const values = sheet.getRange(startRow, 1, endRow - startRow + 1, 2).getDisplayValues();
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i][0] || '').trim() === label) return String(values[i][1] || '').trim();
+  }
+  return '';
+}
+
+function alertNumericScore_(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(String(value).replace(/,/g, '').trim());
+  if (!isFinite(n)) return null;
+  if (n > 0) return 1;
+  if (n < 0) return -1;
+  return 0;
+}
+
+function alertCompressAxis_(internalScores) {
+  const valid = internalScores.filter(v => v === -1 || v === 0 || v === 1);
+  if (!valid.length) return null;
+  const sum = valid.reduce((a, b) => a + b, 0);
+  if (sum >= 2) return 1;
+  if (sum <= -2) return -1;
+  return 0;
+}
+
+function alertLevelForScore_(score) {
+  if (score === null || score === undefined || !isFinite(Number(score))) return null;
+  const n = Number(score);
+  if (n >= 3) return 9;
+  if (n === 2) return 8;
+  if (n === 1) return 7;
+  if (n === 0) return 6;
+  if (n === -1) return 5;
+  if (n === -2) return 4;
+  return 3;
+}
+
+function alertActionLevelMap_() {
+  return {
+    '서킷브레이크': 3,
+    '사이드카': 4,
+    '저점이탈': 5,
+    '저점': 6,
+    '눌림': 7,
+    '박스': 7,
+    '눌림/박스': 7,
+    '돌파': 8,
+    '돌파불타기': 9,
+    '돌파 불타기': 9
+  };
+}
+
+function alertSplitActions_(text) {
+  return String(text || '')
+    .split(/[·,\/]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+function alertAllowedActions_(marketActionsText, maxLevel) {
+  if (!maxLevel) return [];
+  const levelMap = alertActionLevelMap_();
+  const marketActions = alertSplitActions_(marketActionsText);
+  const out = [];
+  marketActions.forEach(action => {
+    const level = levelMap[action];
+    if (level && level <= maxLevel && out.indexOf(action) < 0) out.push(action);
+  });
+  return out;
+}
+
+function alertReadStage0_() {
+  const sheet = SpreadsheetApp.openById(ALERT_STAGE0_SPREADSHEET_ID).getSheetByName(ALERT_STAGE0_SHEET);
+  if (!sheet) throw new Error('Stage0 sheet missing');
+  const top = sheet.getRange('A5:E5').getDisplayValues()[0];
+  return {
+    date: top[0] || '',
+    self_mode: top[1] || '',
+    operation_mode: top[2] || '',
+    active_account: top[3] || '',
+    system_start: top[4] || '',
+    actual_day_capital: alertFindLabelValue_(sheet, '실제 단타계좌 자본', 17, 40)
+  };
+}
+
+function alertReadRegime_() {
+  const sheet = SpreadsheetApp.openById(ALERT_REGIME_SPREADSHEET_ID).getSheetByName(ALERT_REGIME_SHEET);
+  if (!sheet) throw new Error('Regime sheet missing');
+  const hit = alertFindTodayRow_(sheet, 3, 42);
+  if (!hit) return { status: '미수신/제외', missing: ['오늘 시장국면'] };
+  return {
+    status: 'OK',
+    date: hit.display[0] || '',
+    regime: hit.display[2] || '',
+    allowed_time: hit.display[3] || '',
+    allowed_trades: hit.display[4] || ''
+  };
+}
+
+function alertReadStage2_() {
+  const sheet = SpreadsheetApp.openById(ALERT_STAGE2_SPREADSHEET_ID).getSheetByName(ALERT_STAGE2_SHEET);
+  if (!sheet) throw new Error('Stage2 sheet missing');
+  const hit = alertFindTodayRow_(sheet, 5, 11);
+  if (!hit) return { status: '미수신/제외', missing: ['오늘 2단계'] };
+  return {
+    status: 'OK',
+    date: hit.display[0] || '',
+    total_score: hit.display[6] || '',
+    tollgate: hit.display[7] || '',
+    base_r: hit.display[8] || '',
+    decision_time: hit.display[9] || ''
+  };
+}
+
+function alertReadMaterial_() {
+  const sheet = SpreadsheetApp.openById(ALERT_MATERIAL_SPREADSHEET_ID).getSheetByName(ALERT_MATERIAL_SHEET);
+  if (!sheet) throw new Error('Material sheet missing');
+  const raw = sheet.getRange(7, 1, 3, 6).getValues();
+  const display = sheet.getRange(7, 1, 3, 6).getDisplayValues();
+  const internal = [];
+  const items = [];
+  const missing = [];
+  for (let i = 0; i < raw.length; i++) {
+    const label = String(display[i][0] || '').trim();
+    const score = alertNumericScore_(raw[i][1]);
+    const state = String(display[i][5] || '').trim();
+    items.push({ label: label, score: score, state: state });
+    if (score === null) {
+      missing.push(label);
+    } else {
+      internal.push(score);
+    }
+  }
+  return {
+    score: alertCompressAxis_(internal),
+    confirmed_count: internal.length,
+    missing: missing,
+    items: items
+  };
+}
+
+function alertReadSupply_() {
+  const sheet = SpreadsheetApp.openById(SUPPLY_SPREADSHEET_ID).getSheetByName(SUPPLY_LIVE_SHEET);
+  if (!sheet) throw new Error('Supply sheet missing');
+  const rows = sheet.getRange(5, 1, 2, 12).getValues();
+  const display = sheet.getRange(5, 1, 2, 12).getDisplayValues();
+  let idx = -1;
+  for (let i = 0; i < display.length; i++) {
+    if (String(display[i][1] || '').trim() === 'KOSPI') { idx = i; break; }
+  }
+  if (idx < 0) return { score: null, missing: ['KOSPI 수급'] };
+
+  const labels = ['외국인 현물', '기관 현물', '프로그램'];
+  const cols = [3, 4, 5];
+  const internal = [];
+  const missing = [];
+  const values = {};
+  for (let i = 0; i < cols.length; i++) {
+    const rawValue = rows[idx][cols[i]];
+    const n = Number(String(rawValue === null || rawValue === undefined ? '' : rawValue).replace(/,/g, ''));
+    if (!isFinite(n)) {
+      missing.push(labels[i]);
+      values[labels[i]] = null;
+    } else {
+      values[labels[i]] = n;
+      internal.push(n > 0 ? 1 : (n < 0 ? -1 : 0));
+    }
+  }
+  return {
+    score: alertCompressAxis_(internal),
+    as_of: String(display[idx][0] || ''),
+    values: values,
+    missing: missing,
+    data_status: String(display[idx][10] || '')
+  };
+}
+
+function alertReadMoneyFlow_() {
+  const sheet = SpreadsheetApp.openById(TOP100_SPREADSHEET_ID).getSheetByName(ALERT_MONEYFLOW_SHEET);
+  if (!sheet) return { status: '미수신/제외' };
+  const v = sheet.getRange('A4:M10').getDisplayValues();
+  return {
+    status: 'OK',
+    leader: v[0][1] || '',
+    share: v[0][3] || '',
+    market_weight: v[0][9] || '',
+    lifecycle: v[0][11] || '',
+    flow_30m_text: v[1][1] || '',
+    delta_30m: v[1][3] || '',
+    money_move: v[1][7] || '',
+    market_money_state: v[1][9] || '',
+    as_of: v[1][11] || ''
+  };
+}
+
+function alertReadChart_() {
+  const sheet = SpreadsheetApp.openById(ALERT_TECH_SPREADSHEET_ID).getSheetByName(ALERT_TECH_SHEET);
+  if (!sheet) return { score: null, missing: ['기술적 위치 시트'] };
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 4) return { score: null, missing: ['오늘 KOSPI 기술적 위치'] };
+  const raw = sheet.getRange(4, 1, lastRow - 3, 35).getValues();
+  const display = sheet.getRange(4, 1, lastRow - 3, 35).getDisplayValues();
+  const today = alertTodayIso_();
+  let idx = -1;
+  for (let i = 0; i < display.length; i++) {
+    if (alertNormalizeDate_(raw[i][0]) === today && String(display[i][2] || '').trim() === 'KOSPI') {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) return { score: null, missing: ['오늘 KOSPI 기술적 위치'] };
+
+  const missing = [];
+  const boxHigh = String(display[idx][12] || '').trim();
+  const boxLow = String(display[idx][13] || '').trim();
+  const boxState = String(display[idx][15] || '').trim();
+  const boxPos = String(display[idx][16] || '').trim();
+
+  if (!boxHigh || !boxLow || !boxPos || boxState === 'PENDING') missing.push('운영 BOX 위치');
+  // Box round-trip count is not yet persisted in the DAILY operational row.
+  missing.push('박스 왕복횟수');
+
+  return {
+    score: null,
+    as_of: String(display[idx][1] || ''),
+    current_price: String(display[idx][4] || ''),
+    box_high: boxHigh,
+    box_low: boxLow,
+    box_state: boxState,
+    box_position: boxPos,
+    data_status: String(display[idx][33] || ''),
+    missing: missing
+  };
+}
+
+function buildTradingAlertPacket_() {
+  const stage0 = alertReadStage0_();
+  const stage1 = alertReadRegime_();
+  const stage2 = alertReadStage2_();
+  const material = alertReadMaterial_();
+  const supply = alertReadSupply_();
+  const moneyflow = alertReadMoneyFlow_();
+  const chart = alertReadChart_();
+
+  const axes = [];
+  if (material.score !== null) axes.push(material.score);
+  if (supply.score !== null) axes.push(supply.score);
+  if (chart.score !== null) axes.push(chart.score);
+
+  const score = axes.length ? axes.reduce((a, b) => a + b, 0) : null;
+  const maxLevel = alertLevelForScore_(score);
+  const marketActionsText = stage1 && stage1.allowed_trades ? stage1.allowed_trades : '';
+  const allowedActions = alertAllowedActions_(marketActionsText, maxLevel);
+
+  const excluded = [];
+  (material.missing || []).forEach(x => excluded.push('재료:' + x));
+  (supply.missing || []).forEach(x => excluded.push('수급:' + x));
+  (chart.missing || []).forEach(x => excluded.push('차트:' + x));
+
+  return {
+    ok: true,
+    type: 'trading_alert_packet',
+    symbol: 'SK하이닉스',
+    code: '000660',
+    as_of: alertNowText_(),
+    trade_date: alertTodayIso_(),
+    stage0: stage0,
+    stage1: stage1,
+    stage2: stage2,
+    material: material,
+    supply: supply,
+    moneyflow: moneyflow,
+    chart: chart,
+    score: score,
+    max_level: maxLevel,
+    allowed_actions: allowedActions,
+    excluded: excluded,
+    available_axis_count: axes.length
+  };
 }
