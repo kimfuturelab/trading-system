@@ -81,14 +81,8 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         load_runtime_env()
-        webhook = (
-            os.getenv("ATMOSPHERE_WEBHOOK_URL", "").strip()
-            or os.getenv("SHEETS_WEBHOOK_URL", "").strip()
-        )
-        secret = (
-            os.getenv("ATMOSPHERE_INGEST_SECRET", "").strip()
-            or os.getenv("INGEST_SECRET", "").strip()
-        )
+        webhook = os.getenv("ATMOSPHERE_WEBHOOK_URL", "").strip()
+        secret = os.getenv("ATMOSPHERE_INGEST_SECRET", "").strip()
         s = cls(
             app_key=os.getenv("KIWOOM_APP_KEY", os.getenv("APP_KEY", "")).strip(),
             app_secret=os.getenv("KIWOOM_APP_SECRET", os.getenv("APP_SECRET", "")).strip(),
@@ -108,8 +102,8 @@ class Settings:
             name for name, val in (
                 ("KIWOOM_APP_KEY/APP_KEY", s.app_key),
                 ("KIWOOM_APP_SECRET/APP_SECRET", s.app_secret),
-                ("SHEETS_WEBHOOK_URL", s.webhook_url),
-                ("INGEST_SECRET", s.ingest_secret),
+                ("ATMOSPHERE_WEBHOOK_URL", s.webhook_url),
+                ("ATMOSPHERE_INGEST_SECRET", s.ingest_secret),
             )
             if not val
         ]
