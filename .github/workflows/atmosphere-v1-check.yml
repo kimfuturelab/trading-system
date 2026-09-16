@@ -1,0 +1,26 @@
+name: atmosphere-v1-check
+on:
+  push:
+    branches:
+      - feature/atmosphere-v1
+  workflow_dispatch:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile ATMOSPHERE collector
+        run: python -m py_compile collector/atmosphere_v1.py
+      - name: Check standalone Apps Script syntax
+        run: |
+          cp apps-script/AtmosphereV1.gs /tmp/AtmosphereV1.js
+          node --check /tmp/AtmosphereV1.js
+      - name: Verify dedicated Web App entrypoints
+        run: |
+          grep -F "function doPost(e)" apps-script/AtmosphereV1.gs
+          grep -F "ATMOSPHERE_INGEST_SECRET" apps-script/AtmosphereV1.gs
+          ! grep -F "case 'atmosphere':" apps-script/Code.gs
