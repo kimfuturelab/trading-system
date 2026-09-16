@@ -57,15 +57,11 @@ def load_runtime_env() -> tuple[str, str]:
 
     endpoint = env_first(
         "BOX_CONTROL_WEBHOOK_URL",
-        "SHEETS_WEBHOOK_URL",
         "TECH_POSITION_WEBHOOK_URL",
-        "WEBHOOK_URL",
     )
     secret = env_first(
         "BOX_CONTROL_INGEST_SECRET",
-        "INGEST_SECRET",
         "TECH_POSITION_INGEST_SECRET",
-        "WEBHOOK_SECRET",
     )
 
     if not endpoint:
