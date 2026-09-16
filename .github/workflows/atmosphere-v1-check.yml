@@ -15,9 +15,12 @@ jobs:
           python-version: "3.12"
       - name: Compile ATMOSPHERE collector
         run: python -m py_compile collector/atmosphere_v1.py
-      - name: Check Apps Script module syntax
+      - name: Check standalone Apps Script syntax
         run: |
           cp apps-script/AtmosphereV1.gs /tmp/AtmosphereV1.js
           node --check /tmp/AtmosphereV1.js
-      - name: Check ingest route
-        run: grep -F "case 'atmosphere':" apps-script/Code.gs
+      - name: Verify dedicated Web App entrypoints
+        run: |
+          grep -F "function doPost(e)" apps-script/AtmosphereV1.gs
+          grep -F "ATMOSPHERE_INGEST_SECRET" apps-script/AtmosphereV1.gs
+          ! grep -F "case 'atmosphere':" apps-script/Code.gs
