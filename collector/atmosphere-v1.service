@@ -1,0 +1,16 @@
+[Unit]
+Description=ATMOSPHERE V1 collector for SK Hynix expected-vs-actual reaction
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__HOME__/trading-system-stage3/collector
+ExecStart=__HOME__/trading-system-stage3/.venv/bin/python __HOME__/trading-system-stage3/collector/atmosphere_v1.py --loop
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
