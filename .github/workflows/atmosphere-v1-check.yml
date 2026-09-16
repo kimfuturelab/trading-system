@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  pycompile:
+  syntax:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,3 +15,9 @@ jobs:
           python-version: "3.12"
       - name: Compile ATMOSPHERE collector
         run: python -m py_compile collector/atmosphere_v1.py
+      - name: Check Apps Script module syntax
+        run: |
+          cp apps-script/AtmosphereV1.gs /tmp/AtmosphereV1.js
+          node --check /tmp/AtmosphereV1.js
+      - name: Check ingest route
+        run: grep -F "case 'atmosphere':" apps-script/Code.gs
