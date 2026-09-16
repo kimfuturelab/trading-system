@@ -1,3 +1,54 @@
+// ATMOSPHERE dedicated Web App entrypoint.
+// IMPORTANT: this file belongs to the ATMOSPHERE spreadsheet Apps Script project,
+// not to the 3단계/3.5/P006 Web Apps.
+
+function setAtmosphereIngestSecretOnce() {
+  const secret = 'CHANGE_ME';
+  if (!secret || secret === 'CHANGE_ME') {
+    throw new Error('Set a real ATMOSPHERE secret before running.');
+  }
+  PropertiesService.getScriptProperties().setProperty('ATMOSPHERE_INGEST_SECRET', secret);
+}
+
+function atmVerifySecret_(incoming) {
+  const expected = PropertiesService.getScriptProperties().getProperty('ATMOSPHERE_INGEST_SECRET');
+  if (!expected) throw new Error('ATMOSPHERE_INGEST_SECRET is not configured.');
+  if (!incoming || incoming !== expected) throw new Error('unauthorized');
+}
+
+function atmJson_(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function doGet() {
+  return atmJson_({
+    ok: true,
+    service: 'atmosphere-v1',
+    authority: 'ADVISORY_ONLY',
+    ts: new Date().toISOString()
+  });
+}
+
+function doPost(e) {
+  try {
+    if (!e || !e.postData || !e.postData.contents) {
+      return atmJson_({ ok: false, error: 'empty_body' });
+    }
+    const payload = JSON.parse(e.postData.contents);
+    atmVerifySecret_(payload.secret);
+    if (String(payload.type || '') !== 'atmosphere') {
+      return atmJson_({ ok: false, error: 'unsupported_type', type: payload.type || null });
+    }
+    const result = writeAtmosphere_(payload);
+    return atmJson_({ ok: true, ...result });
+  } catch (err) {
+    console.error(err && err.stack ? err.stack : err);
+    return atmJson_({ ok: false, error: String(err && err.message ? err.message : err) });
+  }
+}
+
 // ATMOSPHERE V1 | expected reaction vs actual opening reaction
 // This module is intentionally isolated from 재수차/Base R/ENTRY authority.
 // It only writes the dedicated ATMOSPHERE workbook and returns an advisory result.
