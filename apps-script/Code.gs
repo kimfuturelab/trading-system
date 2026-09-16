@@ -63,9 +63,6 @@ function doPost(e) {
       case 'technical_position':
         result = writeTechnicalPosition_(payload);
         break;
-      case 'atmosphere':
-        result = writeAtmosphere_(payload);
-        break;
       default:
         return json_({ ok: false, error: 'unsupported_type', type: payload.type || null });
     }
