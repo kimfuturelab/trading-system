@@ -27,6 +27,10 @@ function doGet(e) {
       verifySecret_(e && e.parameter ? e.parameter.secret : '');
       return json_(buildTradingAlertPacket_());
     }
+    if (type === 'box_control') {
+      verifySecret_(e && e.parameter ? e.parameter.secret : '');
+      return json_(buildBoxControl_());
+    }
     return json_({ ok: true, service: 'trading-system-ingest', ts: new Date().toISOString() });
   } catch (err) {
     console.error(err && err.stack ? err.stack : err);
@@ -578,5 +582,127 @@ function buildTradingAlertPacket_() {
     allowed_actions: allowedActions,
     excluded: excluded,
     available_axis_count: axes.length
+  };
+}
+
+
+// -----------------------------------------------------------------------------
+// BOX control-plane | MASTER 00_수동입력 -> server local cache sync.
+// Human-controlled STRUCT BOX only. No price/cycle/order calculation here.
+// Source of Truth: Trading Master 00_수동입력 KOSPI 운영 BOX 변경이력.
+// -----------------------------------------------------------------------------
+const BOX_CONTROL_MASTER_SPREADSHEET_ID = '1D2Dl0AtVCWvwn9R8xa-EnovERQVsUpQaKP4Z2B1Y21s';
+const BOX_CONTROL_MASTER_SHEET = '00_수동입력';
+
+function boxControlDateText_(value) {
+  if (value instanceof Date) {
+    return Utilities.formatDate(value, 'Asia/Seoul', 'yyyy-MM-dd');
+  }
+  const text = String(value || '').trim();
+  const m = text.match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+  if (!m) return '';
+  return m[1] + '-' + String(Number(m[2])).padStart(2, '0') + '-' + String(Number(m[3])).padStart(2, '0');
+}
+
+function boxControlNumber_(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(String(value).replace(/,/g, '').trim());
+  return isFinite(n) ? n : null;
+}
+
+function boxControlSelectLatest_(values, todayIso) {
+  let headerRow = -1;
+  for (let i = 0; i < values.length; i++) {
+    const a = String(values[i][0] || '').trim();
+    const b = String(values[i][1] || '').trim();
+    const c = String(values[i][2] || '').trim();
+    if (a === '적용일' && b === 'BOX_HIGH' && c === 'BOX_LOW') {
+      headerRow = i;
+      break;
+    }
+  }
+  if (headerRow < 0) throw new Error('BOX control header not found in MASTER 00_수동입력');
+
+  let best = null;
+  for (let i = headerRow + 1; i < values.length; i++) {
+    const effectiveDate = boxControlDateText_(values[i][0]);
+    if (!effectiveDate || effectiveDate > todayIso) continue;
+
+    const high = boxControlNumber_(values[i][1]);
+    const low = boxControlNumber_(values[i][2]);
+    if (high === null || low === null || high <= low) continue;
+
+    if (!best || effectiveDate > best.effective_date || (effectiveDate === best.effective_date && i > best._row_index)) {
+      best = {
+        effective_date: effectiveDate,
+        box_high: high,
+        box_low: low,
+        memo: String(values[i][3] || '').trim(),
+        _row_index: i
+      };
+    }
+  }
+  if (!best) throw new Error('No valid KOSPI BOX row effective today or earlier');
+  return best;
+}
+
+function buildBoxControl_() {
+  const ss = SpreadsheetApp.openById(BOX_CONTROL_MASTER_SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(BOX_CONTROL_MASTER_SHEET);
+  if (!sheet) throw new Error('MASTER 00_수동입력 sheet missing');
+
+  const lastRow = Math.max(sheet.getLastRow(), 1);
+  const values = sheet.getRange(1, 1, lastRow, 4).getValues();
+  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  const hit = boxControlSelectLatest_(values, today);
+
+  return {
+    ok: true,
+    type: 'box_control',
+    market: 'KOSPI',
+    effective_date: hit.effective_date,
+    box_high: hit.box_high,
+    box_low: hit.box_low,
+    box_signature: String(hit.box_high) + '|' + String(hit.box_low),
+    source: 'MASTER_00_수동입력',
+    updated_at: Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss'),
+    status: 'READY',
+    note: hit.memo || ''
+  };
+}
+
+function testBoxControlPure_() {
+  const rows = [
+    ['다른섹션', '', '', ''],
+    ['KOSPI 운영 BOX 변경이력 | 구조가 바뀔 때만 다음 빈 행에 입력', '', '', ''],
+    ['적용일', 'BOX_HIGH', 'BOX_LOW', '메모'],
+    ['2026-09-07', 7216, 6400, '초기'],
+    ['2026-09-20', 7300, 6500, '미래']
+  ];
+
+  const hit = boxControlSelectLatest_(rows, '2026-09-16');
+  if (hit.effective_date !== '2026-09-07') throw new Error('effective_date mismatch');
+  if (hit.box_high !== 7216 || hit.box_low !== 6400) throw new Error('BOX value mismatch');
+
+  const invalid = [
+    ['적용일', 'BOX_HIGH', 'BOX_LOW', '메모'],
+    ['2026-09-07', 6300, 6400, 'bad']
+  ];
+  let rejected = false;
+  try {
+    boxControlSelectLatest_(invalid, '2026-09-16');
+  } catch (err) {
+    rejected = true;
+  }
+  if (!rejected) throw new Error('invalid BOX range was not rejected');
+
+  return {
+    ok: true,
+    test: 'BOX_CONTROL_PURE',
+    effective_date: hit.effective_date,
+    box_high: hit.box_high,
+    box_low: hit.box_low,
+    signature: String(hit.box_high) + '|' + String(hit.box_low),
+    invalid_range_rejected: true
   };
 }
