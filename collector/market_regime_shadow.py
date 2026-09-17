@@ -184,9 +184,9 @@ def _load_settings() -> Settings:
 
 def _daily_closes_exact(
     client: KiwoomClient,
-    target_date: str,
+    source_date: str,
 ) -> tuple[list[str], list[float]]:
-    rows = tp.fetch_daily(client, "001", target_date)
+    rows = tp.fetch_daily(client, "001", source_date)
     by_date: dict[str, float] = {}
 
     for row in rows:
@@ -197,9 +197,9 @@ def _daily_closes_exact(
         by_date.setdefault(date_key, float(close))
 
     dates = sorted(by_date, reverse=True)
-    if not dates or dates[0] != target_date:
+    if not dates or dates[0] != source_date:
         raise RuntimeError(
-            f"exact Kiwoom KOSPI daily row unavailable for {target_date}"
+            f"exact Kiwoom KOSPI daily row unavailable for {source_date}"
         )
 
     dates = dates[:21]
@@ -210,11 +210,17 @@ def _daily_closes_exact(
 
 
 def build_result(
-    target_date: str,
+    source_date: str,
     krx_close: float | None = None,
 ) -> RegimeResult:
+    """Build a regime from one exact completed KOSPI session.
+
+    target_date intentionally stays NEXT_SESSION in SHADOW mode. We do not guess
+    Korean exchange holidays. Production activation will bind this result to the
+    next actually confirmed KRX session.
+    """
     client = KiwoomClient(_load_settings())
-    dates, closes = _daily_closes_exact(client, target_date)
+    dates, closes = _daily_closes_exact(client, source_date)
     metrics = calculate_regime(closes)
 
     code = str(metrics["regime_code"])
@@ -225,7 +231,7 @@ def build_result(
     return RegimeResult(
         run_id="REGIME-" + now_kst().strftime("%Y%m%d-%H%M%S"),
         captured_at=captured_at,
-        target_date=f"{target_date[:4]}-{target_date[4:6]}-{target_date[6:8]}",
+        target_date="NEXT_SESSION",
         source_date=f"{dates[0][:4]}-{dates[0][4:6]}-{dates[0][6:8]}",
         source="KIWOOM-ka20006-KOSPI-001",
         close=closes[0],
@@ -307,8 +313,8 @@ def main() -> int:
         self_test()
         return 0
 
-    target_date = args.date or now_kst().strftime("%Y%m%d")
-    result = build_result(target_date)
+    source_date = args.date or now_kst().strftime("%Y%m%d")
+    result = build_result(source_date)
     save_result(result, Path(args.cache).expanduser())
     print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     return 0
