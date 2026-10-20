@@ -25,6 +25,9 @@ def main():
     assert evaluate_watch(capital=held,account_config=cfg,
                           plans=[{**plan,"status":"EXIT_SUBMITTED"}],
                           execute=True,active_window=True)["status"]=="RECONCILE_ONLY"
+    assert evaluate_watch(capital=cash,account_config=cfg,
+                          plans=[{**plan,"status":"EXIT_SUBMITTED"}],
+                          execute=False,active_window=True)["status"]=="RECONCILE_ONLY"
     for data in [
         {"capital":{**held,"reason":held["reason"]+["BROKER_SUFFIX_MISMATCH"]}},
         {"account_config":replace(cfg,allowed_account="1234564311")},
