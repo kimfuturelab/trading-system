@@ -34,14 +34,14 @@ def prepare_sell_handoff(
     generic market orders are intentionally blocked before broker write.
     """
     exchange = str(exchange or "").strip().upper()
-    if exchange not in {"KRX", "NXT"}:
+    if exchange not in {"KRX", "NXT", "SOR"}:
         raise RuntimeError("SELL_HANDOFF_BLOCKED: UNSUPPORTED_EXCHANGE")
 
     resolved_order_type = str(order_type or ("market" if exchange == "KRX" else "limit")).lower()
     if resolved_order_type not in {"market", "limit"}:
         raise RuntimeError("SELL_HANDOFF_BLOCKED: UNSUPPORTED_ORDER_TYPE")
-    if exchange == "NXT" and resolved_order_type == "market":
-        raise RuntimeError("SELL_HANDOFF_BLOCKED: NXT_MARKET_ORDER_NOT_SUPPORTED")
+    if exchange in {"NXT", "SOR"} and resolved_order_type == "market":
+        raise RuntimeError("SELL_HANDOFF_BLOCKED: SOR_OR_NXT_MARKET_ORDER_NOT_SUPPORTED")
     if resolved_order_type == "limit" and not str(price or "").strip():
         raise RuntimeError("SELL_HANDOFF_BLOCKED: LIMIT_PRICE_REQUIRED")
 
