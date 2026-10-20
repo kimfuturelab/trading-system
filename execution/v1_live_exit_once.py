@@ -41,7 +41,7 @@ def _plan_from_row(row: dict[str, Any]) -> ExitPlan:
 
 def _pre_snapshot(broker: Any, exchange: str) -> dict[str, Any]:
     exchange = exchange.upper()
-    if exchange == "KRX":
+    if exchange in {"KRX", "SOR"}:
         return broker.read_snapshot()
     return {
         "account": broker.account_list().payload,
@@ -55,7 +55,7 @@ def _pre_snapshot(broker: Any, exchange: str) -> dict[str, Any]:
 
 def _post_snapshot(broker: Any, exchange: str) -> dict[str, Any]:
     return {
-        "holdings": broker.holdings(basis="total", exchange=exchange).payload,
+        "holdings": broker.holdings(basis="total", exchange="KRX" if exchange == "SOR" else exchange).payload,
         "open_orders": broker.list_open_orders().payload,
     }
 
@@ -73,8 +73,8 @@ def run_live_exit_once(
     fresh NXT quote. Lack of immediate fill never causes an automatic resend.
     """
     exchange = str(exchange or "").strip().upper()
-    if exchange not in {"KRX", "NXT"}:
-        raise RuntimeError("LIVE_EXIT_BLOCKED: exchange must be KRX|NXT")
+    if exchange not in {"KRX", "NXT", "SOR"}:
+        raise RuntimeError("LIVE_EXIT_BLOCKED: exchange must be KRX|NXT|SOR")
 
     assert_live_write_allowed(cfg)
     row = v1.get_plan(plan_id)
@@ -111,11 +111,11 @@ def run_live_exit_once(
     # boundary, even if the trigger had been reserved earlier.
     sell_order_type = "market"
     sell_price: str | None = None
-    if exchange == "NXT":
+    if exchange in {"NXT", "SOR"}:
         quote = quote_reader(
             broker,
             symbol=str(row.get("symbol") or ""),
-            exchange="NXT",
+            exchange=exchange,
         )
         sell_order_type = "limit"
         sell_price = str(aggressive_limit_price(int(quote.last_price), side="SELL", ticks=2))
@@ -169,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="V1 one-shot live EXIT: exchange quote -> gated SELL once -> reconcile"
     )
     p.add_argument("--plan-id", required=True)
-    p.add_argument("--exchange", choices=["KRX", "NXT"], default="KRX")
+    p.add_argument("--exchange", choices=["KRX", "NXT", "SOR"], default="KRX")
     p.add_argument("--auth-env", default=str(DEFAULT_AUTH_ENV))
     p.add_argument("--exec-env", default=str(DEFAULT_EXEC_ENV))
     p.add_argument("--v1-db", default=str(DEFAULT_V1_DB))
