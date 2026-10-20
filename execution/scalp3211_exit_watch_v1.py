@@ -43,9 +43,11 @@ def evaluate_watch(
         reasons.append("EXECUTION_SYMBOL_SCOPE_MISMATCH")
     if account_config.max_order_qty != 1:
         reasons.append("EXECUTION_QTY_SCOPE_MISMATCH")
-    if capital.get("status") not in {"BROKER_CAPITAL_VERIFIED_ONLY", "BLOCK"}:
+    owner_errors = set(capital.get("reason") or [])
+    holds = "EXISTING_HOLDING_REQUIRES_MANAGEMENT" in owner_errors
+    if (capital.get("status") != "BROKER_CAPITAL_VERIFIED_ONLY"
+            and not (holds and owner_errors == {"EXISTING_HOLDING_REQUIRES_MANAGEMENT"})):
         reasons.append("CAPITAL_OWNER_NOT_VALIDATED")
-    holds = "EXISTING_HOLDING_REQUIRES_MANAGEMENT" in (capital.get("reason") or [])
     valid_plans = [
         p for p in plans if
         str(p.get("plan_id") or "").startswith("SCALP3211-") and
