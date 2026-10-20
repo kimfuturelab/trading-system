@@ -63,7 +63,7 @@ def evaluate_watch(
         reasons.append("MULTIPLE_ACTIVE_PLANS")
     if holds and not active:
         reasons.append("UNMANAGED_POSITION_BLOCK_NEW_BUY")
-    if active and not holds:
+    if active and not holds and str(active[0].get("status") or "") != "EXIT_SUBMITTED":
         reasons.append("PLAN_WITHOUT_CONFIRMED_POSITION")
     if not active_window and execute:
         reasons.append("OUTSIDE_0800_TO_2000")
@@ -111,6 +111,27 @@ def main() -> int:
     decision=evaluate_watch(capital=capital,account_config=cfg,
                             plans=plans,execute=args.execute,
                             active_window=active_window)
+    if decision["status"]=="RECONCILE_ONLY":
+        # Read broker truth, update local plan; NEVER transmit or retry SELL.
+        from exit_write_reconcile import reconcile_exit_write
+        from dataclasses import asdict
+        broker=KiwoomCliBroker(mode="real")
+        plan=v1.get_plan(decision["plan_id"])
+        journal=ExitWriteJournal(WRITE_DB)
+        last_id=str(plan.get("exit_intent_id") or "")
+        snapshot={
+            "holdings":broker.holdings(basis="total",exchange="KRX").payload,
+            "open_orders":broker.list_open_orders().payload,
+        }
+        result=reconcile_exit_write(
+            plan_row=plan,snapshot=snapshot,
+            journal_row=journal.get(last_id) if last_id else None,
+            mark_exit_submitted=v1.mark_exit_submitted,
+            reconcile_holding=v1.reconcile_holding,
+        )
+        decision={"status":"RECONCILED_NO_RESEND","plan_id":plan["plan_id"],
+                  "result":asdict(result),"final_plan":v1.get_plan(plan["plan_id"]),
+                  "broker_write":False}
     if decision["status"]=="RUN_LIVE_EXIT_ONCE":
         if cfg.kill_switch or not cfg.allow_live_orders or cfg.daily_arm_date!=at.date().isoformat():
             decision={"status":"HALT","reasons":["LIVE_ARM_OR_KILL_SWITCH_NOT_READY"],"broker_write":False}
