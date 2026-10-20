@@ -90,7 +90,9 @@ def exchange_query_code(symbol: str, exchange: str) -> str:
         return symbol
     if exchange == "NXT":
         return f"{symbol}_NX"
-    raise ValueError("exchange must be KRX|NXT")
+    if exchange == "SOR":
+        return f"{symbol}_AL"
+    raise ValueError("exchange must be KRX|NXT|SOR")
 
 
 def _kiwoomcli_path() -> Path:
@@ -117,7 +119,7 @@ def _cli_python_command(cli_path: Path) -> list[str]:
     return [sys.executable]
 
 
-def _read_nxt_with_current_python(symbol: str, mode: str) -> dict[str, Any] | None:
+def _read_nxt_with_current_python(symbol: str, mode: str, exchange: str = "NXT") -> dict[str, Any] | None:
     try:
         from kiwoom import get_client  # type: ignore
     except Exception:
@@ -128,7 +130,7 @@ def _read_nxt_with_current_python(symbol: str, mode: str) -> dict[str, Any] | No
         response = client.fetch_page(
             api_id="ka10001",
             path="/api/dostk/stkinfo",
-            body={"stk_cd": exchange_query_code(symbol, "NXT")},
+            body={"stk_cd": exchange_query_code(symbol, exchange)},
         )
         payload = response.body
         return payload if isinstance(payload, dict) else None
@@ -138,14 +140,14 @@ def _read_nxt_with_current_python(symbol: str, mode: str) -> dict[str, Any] | No
         return None
 
 
-def _read_nxt_with_cli_runtime(symbol: str, mode: str) -> dict[str, Any]:
+def _read_nxt_with_cli_runtime(symbol: str, mode: str, exchange: str = "NXT") -> dict[str, Any]:
     cli = _kiwoomcli_path()
     python_cmd = _cli_python_command(cli)
     bridge = Path(__file__).with_name("nxt_quote_sdk_bridge.py")
     if not bridge.exists():
         raise QuoteTransportError("NXT SDK bridge file missing")
 
-    cmd = [*python_cmd, str(bridge), "--symbol", symbol, "--mode", mode]
+    cmd = [*python_cmd, str(bridge), "--symbol", symbol, "--mode", mode, "--exchange", exchange]
     try:
         cp = subprocess.run(
             cmd,
@@ -185,6 +187,7 @@ def read_nxt_quote_official(
     *,
     symbol: str,
     mode: str = "real",
+    exchange: str = "NXT",
 ) -> QuoteSnapshot:
     """READ-only NXT quote using Kiwoom's official Python client/runtime.
 
@@ -204,9 +207,12 @@ def read_nxt_quote_official(
     if mode == "demo":
         raise QuoteTransportError("Kiwoom demo does not support NXT")
 
-    payload = _read_nxt_with_current_python(symbol, mode)
+    exchange = str(exchange or "").upper()
+    if exchange not in {"NXT", "SOR"}:
+        raise ValueError("official SDK route must be NXT|SOR")
+    payload = _read_nxt_with_current_python(symbol, mode, exchange)
     if payload is None:
-        payload = _read_nxt_with_cli_runtime(symbol, mode)
+        payload = _read_nxt_with_cli_runtime(symbol, mode, exchange)
 
     code = payload.get("return_code")
     try:
@@ -219,13 +225,13 @@ def read_nxt_quote_official(
             f"Kiwoom ka10001 return_code={normalized}: {msg[:300]}"
         )
 
-    query_code = exchange_query_code(symbol, "NXT")
+    query_code = exchange_query_code(symbol, exchange)
     return QuoteSnapshot(
         symbol=symbol,
         last_price=extract_last_price(payload),
         captured_at=datetime.now(KST),
         payload=payload,
-        exchange="NXT",
+        exchange=exchange,
         query_code=query_code,
     )
 
@@ -241,10 +247,10 @@ def read_quote_snapshot(
         raise ValueError("symbol must be a 6-character stock code")
     exchange = str(exchange or "").strip().upper()
 
-    if exchange == "NXT":
-        return read_nxt_quote_official(symbol=symbol, mode=broker.mode)
+    if exchange in {"NXT", "SOR"}:
+        return read_nxt_quote_official(symbol=symbol, mode=broker.mode, exchange=exchange)
     if exchange != "KRX":
-        raise ValueError("exchange must be KRX|NXT")
+        raise ValueError("exchange must be KRX|NXT|SOR")
 
     # KRX keeps the already validated kwcli path.
     result = broker._run(  # noqa: SLF001

@@ -9,6 +9,7 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Kiwoom official SDK NXT quote bridge")
     p.add_argument("--symbol", required=True)
     p.add_argument("--mode", choices=["real", "demo"], default="real")
+    p.add_argument("--exchange", choices=["NXT", "SOR"], default="NXT")
     args = p.parse_args()
 
     symbol = str(args.symbol or "").strip().upper()
@@ -23,7 +24,7 @@ def main() -> int:
         response = client.fetch_page(
             api_id="ka10001",
             path="/api/dostk/stkinfo",
-            body={"stk_cd": f"{symbol}_NX"},
+            body={"stk_cd": f"{symbol}_{'AL' if args.exchange == 'SOR' else 'NX'}"},
         )
         payload = response.body
         print(json.dumps({"ok": True, "payload": payload}, ensure_ascii=False, default=str))

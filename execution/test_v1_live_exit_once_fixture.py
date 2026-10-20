@@ -29,6 +29,7 @@ class FakeBroker:
         self.read_snapshot_calls = 0
         self.pre_qty = 1
         self.post_qty = 0
+        self.holdings_calls = 0
 
     @staticmethod
     def _holdings(qty: int) -> dict:
@@ -83,7 +84,11 @@ class FakeBroker:
 
     def holdings(self, *, basis: str = "total", exchange: str = "KRX"):
         assert exchange == self.exchange
-        return FakeResult(payload=self._holdings(self.post_qty))
+        self.holdings_calls += 1
+        # NXT uses this method for BOTH pre- and post-write snapshots.
+        # The first call must reflect the existing 1-share holding.
+        qty = self.pre_qty if self.exchange == "NXT" and self.holdings_calls == 1 else self.post_qty
+        return FakeResult(payload=self._holdings(qty))
 
     def list_open_orders(self):
         return FakeResult(payload={"미체결": []})
