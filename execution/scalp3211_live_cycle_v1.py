@@ -49,7 +49,7 @@ def stage4_plans(today: str) -> list[dict]:
         con.row_factory = sqlite3.Row
         rows = con.execute(
             "SELECT * FROM stage4_trade_plans WHERE trade_date=? "
-            "AND account_alias=? AND symbol=? AND status='OPEN'",
+            "AND account_alias=? AND symbol=?",
             (today, ACCOUNT, SYMBOL)).fetchall()
     return [dict(row) for row in rows]
 
@@ -179,6 +179,11 @@ def once(*, execute: bool) -> dict:
         return {"state":"FIRST_FILL_PROTECTED","result":result}
     if not execute:
         return {"state":"SHADOW_ONLY_NO_NEW_ORDER"}
+    if p.get("status") != "OPEN":
+        return {"state":"WAIT_STAGE4_PLAN_OPEN_STATUS"}
+    t = datetime.now(KST)
+    if t.weekday() >= 5 or (t.hour * 100 + t.minute) < 800 or (t.hour * 100 + t.minute) >= 1955:
+        return {"state":"WAIT_SOR_SESSION_AND_SAFE_FLAT_BY_CLOSE"}
     if capital.get("status")!="BROKER_CAPITAL_VERIFIED_ONLY":
         return {"state":"WAIT_FLAT_3211_CAPITAL"}
     if not current_entry_is_allowed(original_packet(today),p):
@@ -205,7 +210,9 @@ def once(*, execute: bool) -> dict:
         price=str(price),chance_price=price,intent_id=id_buy,
         i_understand_this_sends_a_live_order=True)
     rc=cmd_live_order(args)  # original V0 durable-intent broker engine only
-    return {"state":"V0_BUY_COMMAND_RETURNED","exit_code":rc,"intent_id":id_buy}
+    post=once(execute=False) if rc==0 else None
+    return {"state":"V0_BUY_COMMAND_RETURNED","exit_code":rc,"intent_id":id_buy,
+            "post_submit_fill_and_exit":post}
 
 
 def main():
