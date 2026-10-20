@@ -155,7 +155,7 @@ def run_live_exit_once(
         "order_route": {
             "order_type": sell_order_type,
             "price": sell_price,
-            "policy": "KRX_MARKET" if exchange == "KRX" else "NXT_AGGRESSIVE_LIMIT_2TICKS",
+            "policy": "KRX_MARKET" if exchange == "KRX" else f"{exchange}_AGGRESSIVE_LIMIT_2TICKS",
         },
         "pre_write_broker": snapshot_summary(snapshot),
         "local_open_intent_count": local_open_count,
