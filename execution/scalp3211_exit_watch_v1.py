@@ -20,6 +20,10 @@ from exit_write_journal import ExitWriteJournal
 from safety import ExecutionConfig, load_env_file
 from state_store import StateStore
 from v1_live_exit_once import run_live_exit_once
+from scalp3211_bar_horizon_v1 import completed_24_bar_timecut
+from exit_plan import ExitTrigger, evaluate_exit_trigger
+from quote_reader import read_quote_snapshot
+from v1_live_exit_once import _plan_from_row
 from scalp3211_capital_owner_v1 import capture_3211_capital_owner
 
 KST = ZoneInfo("Asia/Seoul")
@@ -137,6 +141,31 @@ def main() -> int:
             decision={"status":"HALT","reasons":["LIVE_ARM_OR_KILL_SWITCH_NOT_READY"],"broker_write":False}
         else:
             broker=KiwoomCliBroker(mode="real")
+            # First actual BUY fill is persisted as a V1 event. The same
+            # completed 5m-bar SQLite used by the existing DAY engine decides
+            # the 24-bar timecut, not a wall-clock approximation.
+            events=v1.list_events(decision["plan_id"])
+            anchors=[]
+            for event in events:
+                if event.get("event_type")=="FIRST_REAL_BUY_FILL":
+                    payload=json.loads(event.get("payload_json") or "{}")
+                    if payload.get("first_fill_at"):
+                        anchors.append(payload["first_fill_at"])
+            if len(set(anchors))==1:
+                first_fill_at=anchors[0]
+                if completed_24_bar_timecut(first_fill_at):
+                    row=v1.get_plan(decision["plan_id"])
+                    if row and row.get("status") in ("EXIT_ARMED","POSITION"):
+                        quote=read_quote_snapshot(broker,symbol=SYMBOL,exchange="SOR")
+                        normal=evaluate_exit_trigger(
+                            _plan_from_row(row),last_price=int(quote.last_price),
+                            now=quote.captured_at)
+                        if normal is None:
+                            v1.trigger_once(
+                                decision["plan_id"],
+                                ExitTrigger("TIMECUT",int(quote.last_price),quote.captured_at))
+            elif len(anchors)>1:
+                raise RuntimeError("AMBIGUOUS_FIRST_REAL_FILL_ANCHORS")
             data=run_live_exit_once(
                 cfg=cfg,plan_id=decision["plan_id"],v1=v1,
                 v0=StateStore(cfg.state_db),journal=ExitWriteJournal(WRITE_DB),
