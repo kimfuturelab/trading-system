@@ -130,8 +130,15 @@ def sheet_updates(result:dict)->list[dict]:
 def sync_once()->dict:
     sys.path.insert(0,str(HOME/"trading-system-stage3/collector"))
     from stage4_p047_handoff import session,get_values,update_values,STAGE4_ID
-    p=json.loads(PACKET.read_text(encoding="utf-8"))
-    result=decision_fields(p,now=datetime.now(KST))
+    try:
+        p=json.loads(PACKET.read_text(encoding="utf-8"))
+        result=decision_fields(p,now=datetime.now(KST))
+    except (OSError,ValueError,TypeError,KeyError):
+        # A missing/corrupt packet must clear a previous READY approval,
+        # never leave an apparently valid BUY candidate on the sheet.
+        result={"status":"PENDING",
+                "reasons":["GOLD_PACKET_UNAVAILABLE_OR_INVALID"],
+                "values":None}
     s=session()
     identity=get_values(s,STAGE4_ID,SHEET,"B4:B5")
     if identity!=[["3211"],["005930"]]:
