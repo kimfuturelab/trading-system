@@ -24,6 +24,7 @@ from scalp3211_capital_owner_v1 import capture_3211_capital_owner
 from scalp3211_broker_fill_v1 import intent_id_from_stage4, verified_first_fill
 from scalp3211_exit_owner_v1 import approved_exit_contract
 from scalp3211_switch_v1 import entry_switch_on
+from scalp3211_stage4_store_v1 import persist_approved_3211_stage4
 from scalp3211_fill_exit_bridge_v1 import register_existing_v1_plan
 from state_store import StateStore
 from v0_engine import cmd_live_order, open_order_rows, sync_open_intents
@@ -217,6 +218,13 @@ def once(*, execute: bool) -> dict:
             return {"state":"HALT_UNPROTECTED_3211_HOLDING",
                     "reason":"BROKER_HAS_SHARE_WITHOUT_V1_EXIT_PLAN"}
     plans=stage4_plans(today)
+    if not plans and entry_switch_on():
+        # The original Stage4 sheet is the only approval owner. Persist only
+        # its 3211-specific approved 1-share row into the EXISTING plan DB.
+        # This does not invoke Kiwoom orders or relax the V0 buy gates.
+        source=persist_approved_3211_stage4(today=today,broker_capital=capital)
+        if source.get("status") in ("STAGE4_PLAN_PERSISTED","ALREADY_PERSISTED"):
+            plans=stage4_plans(today)
     if len(plans)!=1:
         return {"state":"WAIT_STAGE4_ONE_APPROVED_PLAN","count":len(plans)}
     p=plans[0]
