@@ -23,6 +23,7 @@ from safety import ExecutionConfig, load_env_file
 from scalp3211_capital_owner_v1 import capture_3211_capital_owner
 from scalp3211_broker_fill_v1 import intent_id_from_stage4, verified_first_fill
 from scalp3211_exit_owner_v1 import approved_exit_contract
+from scalp3211_switch_v1 import entry_switch_on
 from scalp3211_fill_exit_bridge_v1 import register_existing_v1_plan
 from state_store import StateStore
 from v0_engine import cmd_live_order, open_order_rows, sync_open_intents
@@ -241,6 +242,10 @@ def once(*, execute: bool) -> dict:
         return {"state":"FIRST_FILL_PROTECTED","result":result}
     if not execute:
         return {"state":"SHADOW_ONLY_NO_NEW_ORDER"}
+    # ON/OFF is a separate system switch; never suppress the already-started
+    # fill recovery above, nor the protective V1 SELL watcher.
+    if not entry_switch_on():
+        return {"state":"ENTRY_OFF_WAITING_FOR_SYSTEM_ON"}
     if p.get("status") != "OPEN":
         return {"state":"WAIT_STAGE4_PLAN_OPEN_STATUS"}
     t = datetime.now(KST)
