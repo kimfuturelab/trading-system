@@ -28,6 +28,14 @@ def main():
     assert evaluate_watch(capital=cash,account_config=cfg,
                           plans=[{**plan,"status":"EXIT_SUBMITTED"}],
                           execute=False,active_window=True)["status"]=="RECONCILE_ONLY"
+    # A partial SELL must use broker reconciliation on every tick; never resend.
+    for broker_capital in (held, cash):
+        for do_execute in (False, True):
+            partial=evaluate_watch(capital=broker_capital,account_config=cfg,
+                plans=[{**plan,"status":"PARTIAL_EXIT","remaining_qty":1}],
+                execute=do_execute,active_window=True)
+            assert partial["status"]=="RECONCILE_ONLY",partial
+            assert partial["broker_write"] is False
     for data in [
         {"capital":{**held,"reason":held["reason"]+["BROKER_SUFFIX_MISMATCH"]}},
         {"account_config":replace(cfg,allowed_account="1234564311")},
