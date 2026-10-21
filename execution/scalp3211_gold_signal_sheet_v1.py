@@ -45,6 +45,10 @@ def decision_fields(packet:dict, *, now:datetime)->dict:
     for stage in ("stage0","stage1","stage2","rejuscha","entry","stage4"):
         require((stages.get(stage) or {}).get("status")=="OK",
                 stage.upper()+"_NOT_OK")
+    require((stages.get("stage1") or {}).get("source_at")==today,
+            "REGIME_SOURCE_NOT_CURRENT_SESSION")
+    require(str((stages.get("stage2") or {}).get("source_at") or "").startswith(today),
+            "RISK_STAGE2_SOURCE_NOT_CURRENT_SESSION")
     r=(stages.get("stage1") or {}).get("value") or {}
     v=(stages.get("stage4") or {}).get("value") or {}
     entry=(stages.get("entry") or {}).get("value") or {}
