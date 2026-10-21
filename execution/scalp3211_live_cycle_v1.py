@@ -94,13 +94,29 @@ def current_entry_is_allowed(packet: dict, plan: dict) -> bool:
             plan.get("expected_loss") !=
             plan.get("planned_entry_price")-plan.get("stop_price")):
         return False
-    # Strategy matching cannot be inferred merely from a RED regime label.
-    # Only the original Stage4 owner may supply an approved method.
-    method=plan.get("approved_method")
-    if (not method or
-            method not in (score.get("executable_actions") or []) or
-            method not in str((regime.get("value") or {}).get("allowed_strategy") or "")):
+    # The original Stage4 SQLite schema has no approved_method column.
+    # Use only a method explicitly selected by an authenticated GOLD owner.
+    # Never infer a strategy from the regime's list of eligible strategies.
+    original_method = (
+        s4.get("approved_method") or
+        entry.get("approved_method") or
+        score.get("approved_method")
+    )
+    if not isinstance(original_method, str):
         return False
+    method=original_method.strip()
+    if (not method or method not in (score.get("executable_actions") or [])
+            or method not in str((regime.get("value") or {}).get("allowed_strategy") or "")):
+        return False
+    # RED allows only a confirmed special-event entry. A mere item in the
+    # allowed-method list is not evidence that the event actually occurred.
+    if (regime.get("value") or {}).get("max_hold_stage") == "EXIT_ONLY":
+        confirmed = (
+            entry.get("confirmed_special_event") is True
+            and entry.get("special_event_method") == method
+        )
+        if not confirmed:
+            return False
     return True
 
 
@@ -186,8 +202,14 @@ def once(*, execute: bool) -> dict:
         return {"state":"WAIT_SOR_SESSION_AND_SAFE_FLAT_BY_CLOSE"}
     if capital.get("status")!="BROKER_CAPITAL_VERIFIED_ONLY":
         return {"state":"WAIT_FLAT_3211_CAPITAL"}
-    if not current_entry_is_allowed(original_packet(today),p):
-        return {"state":"WAIT_GOLD_AND_STAGE4_APPROVAL"}
+    packet=original_packet(today)
+    if not current_entry_is_allowed(packet,p):
+        return {"state":"WAIT_GOLD_AND_STAGE4_APPROVAL",
+                "entry_action":((packet.get("stages") or {}).get("entry") or {}).get("value",{}).get("action_status"),
+                "stage4_action":((packet.get("stages") or {}).get("stage4") or {}).get("value",{}).get("action_status"),
+                "method_approved":bool((
+                    ((packet.get("stages") or {}).get("stage4") or {}).get("value") or {}
+                ).get("approved_method"))}
     price=p["planned_entry_price"]
     loss=p["expected_loss"]
     if (price>capital["orderable_cash_krw"] or
