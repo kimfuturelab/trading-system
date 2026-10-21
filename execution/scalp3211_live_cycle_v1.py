@@ -169,6 +169,11 @@ def once(*, execute: bool) -> dict:
     sys.path.insert(0,str(HOME/"trading-system/collector"))
     from account_snapshot_readonly import collect
     capital=capture_3211_capital_owner(collect("test"))
+    if capital.get("status") == "BLOCK" and "EXISTING_HOLDING_REQUIRES_MANAGEMENT" in (capital.get("reason") or []):
+        if not any(x.get("status") not in ("CLOSED","CANCELLED")
+                   for x in ExitPlanStore(V1_DB).list_plans()):
+            return {"state":"HALT_UNPROTECTED_3211_HOLDING",
+                    "reason":"BROKER_HAS_SHARE_WITHOUT_V1_EXIT_PLAN"}
     plans=stage4_plans(today)
     if len(plans)!=1:
         return {"state":"WAIT_STAGE4_ONE_APPROVED_PLAN","count":len(plans)}
