@@ -67,7 +67,7 @@ def evaluate_watch(
         reasons.append("MULTIPLE_ACTIVE_PLANS")
     if holds and not active:
         reasons.append("UNMANAGED_POSITION_BLOCK_NEW_BUY")
-    if active and not holds and str(active[0].get("status") or "") != "EXIT_SUBMITTED":
+    if active and not holds and str(active[0].get("status") or "") not in {"EXIT_SUBMITTED", "PARTIAL_EXIT"}:
         reasons.append("PLAN_WITHOUT_CONFIRMED_POSITION")
     if not active_window and execute:
         reasons.append("OUTSIDE_0800_TO_2000")
@@ -77,7 +77,9 @@ def evaluate_watch(
         return {"status":"IDLE_FLAT","reasons":[], "broker_write":False}
     p = active[0]
     status = str(p.get("status") or "")
-    if status == "EXIT_SUBMITTED":
+    if status in {"EXIT_SUBMITTED", "PARTIAL_EXIT"}:
+        # An existing SELL may still be open or partly executed. Reconcile broker
+        # holdings/order state only; never submit a second SELL on this path.
         return {"status":"RECONCILE_ONLY","plan_id":p["plan_id"],
                 "reasons":["EXISTING_SELL_ORDER_NO_RESEND"],"broker_write":False}
     if status not in {"EXIT_ARMED","POSITION","EXIT_TRIGGERED"}:
