@@ -94,13 +94,29 @@ def current_entry_is_allowed(packet: dict, plan: dict) -> bool:
             plan.get("expected_loss") !=
             plan.get("planned_entry_price")-plan.get("stop_price")):
         return False
-    # Strategy matching cannot be inferred merely from a RED regime label.
-    # Only the original Stage4 owner may supply an approved method.
-    method=plan.get("approved_method")
-    if (not method or
-            method not in (score.get("executable_actions") or []) or
-            method not in str((regime.get("value") or {}).get("allowed_strategy") or "")):
+    # The original Stage4 SQLite schema has no approved_method column.
+    # Use only a method explicitly selected by an authenticated GOLD owner.
+    # Never infer a strategy from the regime's list of eligible strategies.
+    original_method = (
+        s4.get("approved_method") or
+        entry.get("approved_method") or
+        score.get("approved_method")
+    )
+    if not isinstance(original_method, str):
         return False
+    method=original_method.strip()
+    if (not method or method not in (score.get("executable_actions") or [])
+            or method not in str((regime.get("value") or {}).get("allowed_strategy") or "")):
+        return False
+    # RED allows only a confirmed special-event entry. A mere item in the
+    # allowed-method list is not evidence that the event actually occurred.
+    if (regime.get("value") or {}).get("max_hold_stage") == "EXIT_ONLY":
+        confirmed = (
+            entry.get("confirmed_special_event") is True
+            and entry.get("special_event_method") == method
+        )
+        if not confirmed:
+            return False
     return True
 
 
@@ -142,6 +158,47 @@ def approved_contract_for_cycle(plan: dict, today: str, *, allow_new: bool) -> d
     return approved
 
 
+def protective_watch_runtime_ready() -> bool:
+    """Do not BUY while the separately scheduled V1 SELL watcher is missing.
+
+    Logs are only a liveness receipt, not evidence that the exit E2E passed.
+    The original V1 safety checks remain mandatory at any actual SELL.
+    """
+    import subprocess
+    try:
+        cron=subprocess.run(["crontab","-l"],capture_output=True,text=True,timeout=4)
+        if cron.returncode != 0 or "SCALP3211_EXIT_WATCH" not in cron.stdout:
+            return False
+        log=HOME/"trading-system/runtime/scalp3211_exit_watch.log"
+        with log.open("rb") as stream:
+            stream.seek(max(0, log.stat().st_size-18000))
+            lines=stream.read().decode("utf-8",errors="replace").splitlines()
+        receipts=[]
+        for line in lines:
+            if not line.startswith("{"):
+                continue
+            try:
+                item=json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "at_kst" in item and "decision" in item:
+                receipts.append(item)
+        if not receipts:
+            return False
+        last=receipts[-1]
+        captured=datetime.fromisoformat(last["at_kst"]).astimezone(KST)
+        seconds=(datetime.now(KST)-captured).total_seconds()
+        return (
+            0 <= seconds <= 180
+            and last.get("account_suffix")=="3211"
+            and last.get("symbol")==SYMBOL
+            and last.get("capital_owner_status")=="BROKER_CAPITAL_VERIFIED_ONLY"
+            and (last.get("decision") or {}).get("status")=="IDLE_FLAT"
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
 def once(*, execute: bool) -> dict:
     today=_today()
     load_env_file(HOME/"api-read-v2.env",required=True)
@@ -153,6 +210,11 @@ def once(*, execute: bool) -> dict:
     sys.path.insert(0,str(HOME/"trading-system/collector"))
     from account_snapshot_readonly import collect
     capital=capture_3211_capital_owner(collect("test"))
+    if capital.get("status") == "BLOCK" and "EXISTING_HOLDING_REQUIRES_MANAGEMENT" in (capital.get("reason") or []):
+        if not any(x.get("status") not in ("CLOSED","CANCELLED")
+                   for x in ExitPlanStore(V1_DB).list_plans()):
+            return {"state":"HALT_UNPROTECTED_3211_HOLDING",
+                    "reason":"BROKER_HAS_SHARE_WITHOUT_V1_EXIT_PLAN"}
     plans=stage4_plans(today)
     if len(plans)!=1:
         return {"state":"WAIT_STAGE4_ONE_APPROVED_PLAN","count":len(plans)}
@@ -186,8 +248,14 @@ def once(*, execute: bool) -> dict:
         return {"state":"WAIT_SOR_SESSION_AND_SAFE_FLAT_BY_CLOSE"}
     if capital.get("status")!="BROKER_CAPITAL_VERIFIED_ONLY":
         return {"state":"WAIT_FLAT_3211_CAPITAL"}
-    if not current_entry_is_allowed(original_packet(today),p):
-        return {"state":"WAIT_GOLD_AND_STAGE4_APPROVAL"}
+    packet=original_packet(today)
+    if not current_entry_is_allowed(packet,p):
+        return {"state":"WAIT_GOLD_AND_STAGE4_APPROVAL",
+                "entry_action":((packet.get("stages") or {}).get("entry") or {}).get("value",{}).get("action_status"),
+                "stage4_action":((packet.get("stages") or {}).get("stage4") or {}).get("value",{}).get("action_status"),
+                "method_approved":bool((
+                    ((packet.get("stages") or {}).get("stage4") or {}).get("value") or {}
+                ).get("approved_method"))}
     price=p["planned_entry_price"]
     loss=p["expected_loss"]
     if (price>capital["orderable_cash_krw"] or
@@ -201,6 +269,8 @@ def once(*, execute: bool) -> dict:
     contract=approved_contract_for_cycle(p,today,allow_new=True)
     if contract is None:
         return {"state":"WAIT_APPROVED_TARGET_AND_24BAR_EXIT"}
+    if not protective_watch_runtime_ready():
+        return {"state":"WAIT_EXISTING_V1_PROTECTIVE_WATCHER"}
     if cfg.kill_switch or not cfg.allow_live_orders or cfg.daily_arm_date!=today:
         return {"state":"WAIT_LIVE_KILL_SWITCH_AND_DAILY_ARM"}
     args=argparse.Namespace(
