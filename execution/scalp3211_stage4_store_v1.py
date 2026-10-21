@@ -130,6 +130,12 @@ def persist_approved_3211_stage4(*, today:str, broker_capital:dict|None=None)->d
     s=session()
     daily=today+"_빠른계산"
     facts=read_result(s,daily)
+    # P047.read_result does not include the original DAILY_SHEET key.
+    # Establish its identity from the authenticated ENTRY_연동 map, not
+    # from the caller or an assumed current trading day.
+    from stage4_p047_handoff import entry_map
+    origin=entry_map(get_values(s, STAGE4_ID, "ENTRY_연동", "A1:C50"))
+    facts["daily_sheet"]=str(origin.get("DAILY_SHEET") or "")
     approval=get_values(s,STAGE4_ID,daily,"A19:AC19")
     order=get_values(s,STAGE4_ID,daily,"A25:AC25")
     decision=review_stage4_for_3211(
