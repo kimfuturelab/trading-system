@@ -99,16 +99,38 @@ def register_existing_v1_plan(
     existing = v1.get_plan(plan.plan_id)
     if existing is not None:
         if (int(existing["entry_price"]) != entry or int(existing["stop_price"]) != stop
-                or int(existing["take_profit_price"]) != target):
+                or int(existing["take_profit_price"]) != target
+                or str(existing["timecut_at"]) !=
+                    end_at.isoformat(timespec="seconds")):
             raise ValueError("EXISTING_PROTECTIVE_PLAN_CONFLICT")
-        return {"status":"ALREADY_ARMED","plan_id":plan.plan_id}
-    row = v1.reserve_plan(plan)
-    with v1.connect() as con:
-        v1._event(
-            con, plan_id=plan.plan_id, event_type="FIRST_REAL_BUY_FILL",
-            payload={"first_fill_at":fill["first_fill_at"],
-                     "handoff_id":handoff_id,"order_no":fill["order_no"],
-                     "fill_no":fill["fill_no"],"qty":1,"source":fill["broker_source"]},
-        )
-    return {"status":"V1_EXIT_ARMED","plan_id":row["plan_id"],
+        row = existing
+    else:
+        row = v1.reserve_plan(plan)
+    # A restart between reserve_plan and the fill event must not silently
+    # suppress the 24-bar exit. Restore the matching event idempotently.
+    events = [e for e in v1.list_events(plan.plan_id)
+              if e.get("event_type") == "FIRST_REAL_BUY_FILL"]
+    payload = {"first_fill_at":fill["first_fill_at"],
+               "handoff_id":handoff_id, "order_no":fill["order_no"],
+               "fill_no":fill["fill_no"],"qty":1,"source":fill["broker_source"]}
+    if events:
+        if len(events) != 1 or json.loads(events[0]["payload_json"]) != payload:
+            raise ValueError("FIRST_FILL_EVENT_CONFLICT")
+    else:
+        with v1.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            # Read while holding SQLite's writer lock, preventing two workers
+            # from appending the same first-fill record concurrently.
+            already = con.execute(
+                "SELECT payload_json FROM exit_events "
+                "WHERE plan_id=? AND event_type='FIRST_REAL_BUY_FILL'",
+                (plan.plan_id,),
+            ).fetchall()
+            if len(already) > 1 or (already and json.loads(already[0][0]) != payload):
+                raise ValueError("FIRST_FILL_EVENT_CONFLICT")
+            if not already:
+                v1._event(con,plan_id=plan.plan_id,
+                          event_type="FIRST_REAL_BUY_FILL",payload=payload)
+    return {"status":"ALREADY_ARMED" if existing else "V1_EXIT_ARMED",
+            "plan_id":row["plan_id"],
             "timecut_policy":"GOLD_DAY_24_COMPLETE_5M_BARS"}
