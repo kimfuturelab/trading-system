@@ -216,11 +216,18 @@ def once(*, execute: bool) -> dict:
     sys.path.insert(0,str(HOME/"trading-system/collector"))
     from account_snapshot_readonly import collect
     capital=capture_3211_capital_owner(collect("test"))
-    if capital.get("status") == "BLOCK" and "EXISTING_HOLDING_REQUIRES_MANAGEMENT" in (capital.get("reason") or []):
-        if not any(x.get("status") not in ("CLOSED","CANCELLED")
-                   for x in ExitPlanStore(V1_DB).list_plans()):
-            return {"state":"HALT_UNPROTECTED_3211_HOLDING",
-                    "reason":"BROKER_HAS_SHARE_WITHOUT_V1_EXIT_PLAN"}
+    # A just-filled BUY is visible in the broker holdings BEFORE its V1 exit
+    # plan is attached. Do not orphan-halt before authenticating that fill:
+    # permit recovery via the existing durable BUY intent + actual fill +
+    # immutable pre-BUY approved exit contract, never via holdings alone.
+    orphan_holding = (
+        capital.get("status") == "BLOCK"
+        and "EXISTING_HOLDING_REQUIRES_MANAGEMENT" in (capital.get("reason") or [])
+        and not any(x.get("status") not in ("CLOSED", "CANCELLED")
+                    for x in ExitPlanStore(V1_DB).list_plans())
+    )
+    orphan_halt = {"state":"HALT_UNPROTECTED_3211_HOLDING",
+                   "reason":"BROKER_HAS_SHARE_WITHOUT_AUTHENTICATED_BUY_AND_V1_EXIT_PLAN"}
     plans=stage4_plans(today)
     if not plans and entry_switch_on():
         # The original Stage4 sheet is the only approval owner. Persist only
@@ -230,7 +237,8 @@ def once(*, execute: bool) -> dict:
         if source.get("status") in ("PLAN_PERSISTED","ALREADY_PERSISTED"):
             plans=stage4_plans(today)
     if len(plans)!=1:
-        return {"state":"WAIT_STAGE4_ONE_APPROVED_PLAN","count":len(plans)}
+        return orphan_halt if orphan_holding else {
+            "state":"WAIT_STAGE4_ONE_APPROVED_PLAN","count":len(plans)}
     p=plans[0]
     id_buy=intent_id_from_stage4(p["handoff_id"])
     broker=KiwoomCliBroker(mode="real")
@@ -240,18 +248,22 @@ def once(*, execute: bool) -> dict:
     intent=state.get_intent(id_buy)
     if intent:
         if intent["status"]!="FILLED":
-            return {"state":"WAIT_BROKER_FILL_NO_RESEND","status":intent["status"]}
+            return orphan_halt if orphan_holding else {
+                "state":"WAIT_BROKER_FILL_NO_RESEND","status":intent["status"]}
         fill=verified_first_fill(
             handoff_id=p["handoff_id"],intents=state.list_intents(),
             snapshot=snapshot,trade_date=today)
         if not fill:
-            return {"state":"WAIT_AUTHENTICATED_FIRST_FILL"}
+            return orphan_halt if orphan_holding else {
+                "state":"WAIT_AUTHENTICATED_FIRST_FILL"}
         contract=approved_contract_for_cycle(p,today,allow_new=False)
         if not contract:
             return {"state":"HALT_FILL_NEEDS_APPROVED_EXIT_CONTRACT"}
         result=register_existing_v1_plan(
             fill=fill,approved_exit=contract,store=ExitPlanStore(V1_DB))
         return {"state":"FIRST_FILL_PROTECTED","result":result}
+    if orphan_holding:
+        return orphan_halt
     if not execute:
         return {"state":"SHADOW_ONLY_NO_NEW_ORDER"}
     # ON/OFF is a separate system switch; never suppress the already-started
