@@ -30,7 +30,7 @@ def valid_packet():
                 "stop_price":198000,"target1_price":202000,
                 "qty":1,"invest_amount":200000,"expected_loss":2000,
                 "final_r":"0.5R","approved_method":"돌파",
-                "input_at":"2026-10-21T12:25:00+09:00"}}}
+                "input_at":"2026-10-21T12:25:00+09:00"}}}}
 def test():
     p=valid_packet()
     result=decision_fields(p,now=NOW)
