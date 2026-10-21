@@ -33,7 +33,8 @@ def positive_int(value):
 
 
 def review_stage4_for_3211(*, facts:dict, approval:list, order:list,
-                           broker_capital:dict, trade_date:str)->dict:
+                           broker_capital:dict, trade_date:str,
+                           operation_mode:str|None)->dict:
     """Pure validation. Never fabricates an entry, stop, target or approval."""
     failures=[]
     if facts.get("daily_sheet") != trade_date+"_빠른계산":
@@ -58,6 +59,8 @@ def review_stage4_for_3211(*, facts:dict, approval:list, order:list,
         failures.append("ORIGINAL_STAGE4_DECISION_NOT_MATCHED")
     if not str(facts.get("final_r") or "").strip():
         failures.append("ORIGINAL_FINAL_R_MISSING")
+    if operation_mode not in ("생활비모드","복리모드"):
+        failures.append("ORIGINAL_OPERATION_MODE_UNVERIFIED")
     price=positive_int(facts.get("entry_price"))
     stop=positive_int(facts.get("stop_price"))
     qty=positive_int(facts.get("qty"))
@@ -99,7 +102,7 @@ def review_stage4_for_3211(*, facts:dict, approval:list, order:list,
         "planned_qty":1,"planned_invest_amount":invest,
         "expected_loss":loss,"final_r":str(facts["final_r"]),
         "stage_decision":facts["stage_decision"],
-        "operation_mode":"생활비모드",
+        "operation_mode":operation_mode,
     }
     return {"status":"APPROVED_SOURCE_ONLY","reasons":[],
             "plan":plan,"exit":contract}
@@ -111,7 +114,9 @@ def persist_approved_3211_stage4(*, today:str, broker_capital:dict|None=None)->d
                    HOME/"trading-system/collector"):
         if str(folder) not in sys.path:
             sys.path.insert(0,str(folder))
-    from stage4_p047_handoff import session, read_result, get_values, STAGE4_ID
+    from stage4_p047_handoff import (
+        session, read_result, get_values, current_operation_mode, STAGE4_ID
+    )
     from trade_plan_link_v1 import save_plan, get_plan, DB
     if broker_capital is None:
         from account_snapshot_readonly import collect
@@ -124,7 +129,8 @@ def persist_approved_3211_stage4(*, today:str, broker_capital:dict|None=None)->d
     decision=review_stage4_for_3211(
         facts=facts,approval=approval[0] if approval else [],
         order=order[0] if order else [],
-        broker_capital=broker_capital,trade_date=today)
+        broker_capital=broker_capital,trade_date=today,
+        operation_mode=current_operation_mode())
     if decision["status"]!="APPROVED_SOURCE_ONLY":
         return {"status":"WAIT_APPROVAL","reasons":decision["reasons"],
                 "orders_sent":False}
