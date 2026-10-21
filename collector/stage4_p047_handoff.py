@@ -153,6 +153,7 @@ def read_result(s: AuthorizedSession, daily_sheet: str) -> dict:
             return None
 
     return {
+        "daily_sheet": entry.get("DAILY_SHEET"),
         "symbol_code": entry.get("P047_SYMBOL_CODE"),
         "symbol_name": entry.get("P047_SYMBOL_NAME"),
         "entry_class": entry.get("P047_ENTRY_CLASS"),
