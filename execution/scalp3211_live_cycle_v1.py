@@ -158,6 +158,47 @@ def approved_contract_for_cycle(plan: dict, today: str, *, allow_new: bool) -> d
     return approved
 
 
+def protective_watch_runtime_ready() -> bool:
+    """Do not BUY while the separately scheduled V1 SELL watcher is missing.
+
+    Logs are only a liveness receipt, not evidence that the exit E2E passed.
+    The original V1 safety checks remain mandatory at any actual SELL.
+    """
+    import subprocess
+    try:
+        cron=subprocess.run(["crontab","-l"],capture_output=True,text=True,timeout=4)
+        if cron.returncode != 0 or "SCALP3211_EXIT_WATCH" not in cron.stdout:
+            return False
+        log=HOME/"trading-system/runtime/scalp3211_exit_watch.log"
+        with log.open("rb") as stream:
+            stream.seek(max(0, log.stat().st_size-18000))
+            lines=stream.read().decode("utf-8",errors="replace").splitlines()
+        receipts=[]
+        for line in lines:
+            if not line.startswith("{"):
+                continue
+            try:
+                item=json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "at_kst" in item and "decision" in item:
+                receipts.append(item)
+        if not receipts:
+            return False
+        last=receipts[-1]
+        captured=datetime.fromisoformat(last["at_kst"]).astimezone(KST)
+        seconds=(datetime.now(KST)-captured).total_seconds()
+        return (
+            0 <= seconds <= 180
+            and last.get("account_suffix")=="3211"
+            and last.get("symbol")==SYMBOL
+            and last.get("capital_owner_status")=="BROKER_CAPITAL_VERIFIED_ONLY"
+            and (last.get("decision") or {}).get("status")=="IDLE_FLAT"
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
 def once(*, execute: bool) -> dict:
     today=_today()
     load_env_file(HOME/"api-read-v2.env",required=True)
@@ -228,6 +269,8 @@ def once(*, execute: bool) -> dict:
     contract=approved_contract_for_cycle(p,today,allow_new=True)
     if contract is None:
         return {"state":"WAIT_APPROVED_TARGET_AND_24BAR_EXIT"}
+    if not protective_watch_runtime_ready():
+        return {"state":"WAIT_EXISTING_V1_PROTECTIVE_WATCHER"}
     if cfg.kill_switch or not cfg.allow_live_orders or cfg.daily_arm_date!=today:
         return {"state":"WAIT_LIVE_KILL_SWITCH_AND_DAILY_ARM"}
     args=argparse.Namespace(
