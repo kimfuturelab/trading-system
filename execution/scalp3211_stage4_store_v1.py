@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+from decimal import Decimal, InvalidOperation
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -26,9 +27,12 @@ def positive_int(value):
         if type(value) is bool or value is None:
             return None
         digits=str(value).replace(",","").replace("₩","").strip()
-        number=int(digits)
+        exact=Decimal(digits)
+        if not exact.is_finite() or exact!=exact.to_integral_value():
+            return None
+        number=int(exact)
         return number if number>0 else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, InvalidOperation):
         return None
 
 
@@ -80,9 +84,11 @@ def review_stage4_for_3211(*, facts:dict, approval:list, order:list,
             or broker_capital.get("symbol")!="005930"
             or broker_capital.get("max_order_qty")!=1):
         failures.append("BROKER_ACCOUNT_SCOPE_MISMATCH")
-    if (price is None or loss is None or
-            price>broker_capital.get("orderable_cash_krw",0) or
-            loss>broker_capital.get("risk_reference_krw_1p5pct",0)):
+    cash=broker_capital.get("orderable_cash_krw")
+    limit=broker_capital.get("risk_reference_krw_1p5pct")
+    if (price is None or loss is None
+            or type(cash) is not int or type(limit) is not int
+            or price>cash or loss>limit):
         failures.append("3211_CAPITAL_OR_STOP_RISK_LIMIT")
     row={"trade_date":trade_date,"account_alias":"test","symbol":"005930",
          "planned_qty":1,"planned_entry_price":price,"stop_price":stop,
