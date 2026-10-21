@@ -24,7 +24,7 @@ from scalp3211_capital_owner_v1 import capture_3211_capital_owner
 from scalp3211_broker_fill_v1 import intent_id_from_stage4, verified_first_fill
 from scalp3211_exit_owner_v1 import approved_exit_contract
 from scalp3211_switch_v1 import entry_switch_on
-from scalp3211_stage4_store_v1 import persist_approved_3211_stage4
+from scalp3211_isolated_stage4_bridge_v1 import persist_live as persist_approved_3211_stage4
 from scalp3211_fill_exit_bridge_v1 import register_existing_v1_plan
 from state_store import StateStore
 from v0_engine import cmd_live_order, open_order_rows, sync_open_intents
@@ -123,15 +123,19 @@ def current_entry_is_allowed(packet: dict, plan: dict) -> bool:
 
 
 def authenticated_exit_spec(plan: dict, today: str) -> dict | None:
-    sys.path.insert(0,str(STAGE3/"collector"))
-    from stage4_p047_handoff import session, get_values, STAGE4_ID
-    s=session()
-    rows=get_values(s,STAGE4_ID,f"{today}_빠른계산","A19:AC25")
-    if len(rows)<7:
+    # The 3211 exit owner must be the same isolated sheet + original GOLD
+    # proof used to persist the 3211 Stage4 plan, never DAY's quickcalc.
+    from scalp3211_isolated_stage4_bridge_v1 import inspect_live
+    original=inspect_live(today=today)
+    if original.get("status")!="APPROVED_SOURCE_ONLY":
         return None
-    return approved_exit_contract(
-        plan=plan,trade_date=today,
-        quick_approval_row=rows[0],quick_order_row=rows[6])
+    actual=original["plan"]
+    for field in ("handoff_id","account_alias","symbol","trade_date",
+                  "planned_entry_price","stop_price","planned_qty",
+                  "final_r","stage_decision"):
+        if str(actual.get(field))!=str(plan.get(field)):
+            return None
+    return original["contract"]
 
 
 def stored_contract_path(handoff_id: str) -> Path:
@@ -223,7 +227,7 @@ def once(*, execute: bool) -> dict:
         # its 3211-specific approved 1-share row into the EXISTING plan DB.
         # This does not invoke Kiwoom orders or relax the V0 buy gates.
         source=persist_approved_3211_stage4(today=today,broker_capital=capital)
-        if source.get("status") in ("STAGE4_PLAN_PERSISTED","ALREADY_PERSISTED"):
+        if source.get("status") in ("PLAN_PERSISTED","ALREADY_PERSISTED"):
             plans=stage4_plans(today)
     if len(plans)!=1:
         return {"state":"WAIT_STAGE4_ONE_APPROVED_PLAN","count":len(plans)}
