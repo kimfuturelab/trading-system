@@ -123,6 +123,41 @@ def main() -> int:
     assert result.safe_to_resend is False
     print("[PASS] missing journal is never interpreted by reconcile as safe-to-resend")
 
+    # 6) Flat broker holdings still close an EXIT_SUBMITTED plan even when
+    # journal recovery is impossible, without sending a second SELL.
+    before = len(reconciled)
+    result = reconcile_exit_write(
+        plan_row=plan("EXIT_SUBMITTED"),
+        snapshot=snapshot(0),
+        journal_row=None,
+        mark_exit_submitted=mark_submitted,
+        reconcile_holding=reconcile_holding,
+    )
+    assert result.action == "CLOSED_BY_BROKER_HOLDING"
+    assert result.safe_to_resend is False
+    assert len(reconciled) == before + 1
+    assert reconciled[-1] == ("V1-RECON-FIXTURE-001", 0)
+
+    # 7) Malformed broker holdings MUST NOT impersonate a flat account.
+    for bad in ({}, {"holdings": {}},
+                {"holdings": {"계좌평가잔고개별합산": None}},
+                {"holdings": {"계좌평가잔고개별합산": [{"종목번호":"A005930"}] }},
+                {"holdings": {"return_code": -1,"계좌평가잔고개별합산":[]}}):
+        before = len(reconciled)
+        try:
+            reconcile_exit_write(
+                plan_row=plan("EXIT_SUBMITTED"), snapshot=bad,
+                journal_row=journal("UNKNOWN_ACK"),
+                mark_exit_submitted=mark_submitted,
+                reconcile_holding=reconcile_holding,
+            )
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("invalid broker holdings falsely treated as 0 shares")
+        assert len(reconciled) == before
+    print("[PASS] missing journal + broker-flat closure and malformed holdings fail-closed")
+
     print("[PASS] V1 exit write reconciliation fixture complete")
     print("[SAFE] no network or real order call occurred")
     return 0

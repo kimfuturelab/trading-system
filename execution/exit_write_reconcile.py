@@ -42,8 +42,42 @@ def reconcile_exit_write(
     if not plan_id or not exit_intent_id or not symbol:
         raise RuntimeError("EXIT_WRITE_RECONCILE_BLOCKED: invalid plan identity")
 
+    # A missing or malformed broker holdings payload must NEVER be treated as
+    # zero shares. Otherwise the local EXIT plan can be falsely CLOSED.
+    holdings = snapshot.get("holdings")
+    if not isinstance(holdings, dict):
+        raise RuntimeError("EXIT_RECONCILE_BROKER_HOLDINGS_MISSING")
+    rows = holdings.get("계좌평가잔고개별합산")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise RuntimeError("EXIT_RECONCILE_BROKER_HOLDINGS_UNVERIFIED")
+    if str(holdings.get("return_code", 0)) != "0":
+        raise RuntimeError("EXIT_RECONCILE_BROKER_HOLDINGS_ERROR")
+    for row in rows:
+        raw = next((row[k] for k in ("보유수량", "rmnd_qty", "보유량")
+                    if k in row), None)
+        if raw is None:
+            raise RuntimeError("EXIT_RECONCILE_HOLDING_QTY_MISSING")
+        from v0_engine import parse_intish
+        qty_check = parse_intish(raw)
+        if qty_check is None or qty_check < 0:
+            raise RuntimeError("EXIT_RECONCILE_HOLDING_QTY_INVALID")
     broker_qty = holding_qty(snapshot, symbol)
     broker_opens = len(open_order_rows(snapshot))
+
+    # A proved broker-flat position is CLOSED even if its local journal was
+    # lost across a restart; never resubmit a SELL to infer closure.
+    if broker_qty == 0:
+        reconcile_holding(plan_id, broker_holding_qty=0)
+        return ExitWriteReconcileResult(
+            action="CLOSED_BY_BROKER_HOLDING",
+            plan_id=plan_id,
+            exit_intent_id=exit_intent_id,
+            broker_holding_qty=0,
+            broker_open_order_count=broker_opens,
+            broker_order_no=(str(journal_row.get("broker_order_no") or "").strip() or None)
+                if journal_row else None,
+            safe_to_resend=False,
+        )
 
     if journal_row is None:
         return ExitWriteReconcileResult(
@@ -58,21 +92,6 @@ def reconcile_exit_write(
 
     state = str(journal_row.get("state") or "").strip().upper()
     order_no = str(journal_row.get("broker_order_no") or "").strip() or None
-
-    # Broker holding is position truth. If flat, close the plan regardless of
-    # whether the ACK was locally observed. This still does not claim which
-    # path closed the position; it only prevents another SELL.
-    if broker_qty == 0:
-        reconcile_holding(plan_id, broker_holding_qty=0)
-        return ExitWriteReconcileResult(
-            action="CLOSED_BY_BROKER_HOLDING",
-            plan_id=plan_id,
-            exit_intent_id=exit_intent_id,
-            broker_holding_qty=0,
-            broker_open_order_count=broker_opens,
-            broker_order_no=order_no,
-            safe_to_resend=False,
-        )
 
     # If broker ACK/order number was persisted but the EXIT_PLAN state update
     # was interrupted, restore that local transition, then reconcile remaining
