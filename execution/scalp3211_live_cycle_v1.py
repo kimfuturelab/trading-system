@@ -309,7 +309,7 @@ def once(*, execute: bool) -> dict:
         return {"state":"WAIT_STAGE4_PLAN_OPEN_STATUS"}
     t = datetime.now(KST)
     if not entry_session_open(t):
-        return {"state":"WAIT_SOR_SESSION_AND_SAFE_FLAT_BY_CLOSE"}
+        return {"state":"WAIT_SOR_SESSION_0800_TO_2000"}
     if capital.get("status")!="BROKER_CAPITAL_VERIFIED_ONLY":
         return {"state":"WAIT_FLAT_3211_CAPITAL"}
     user_one_time=str(p.get("handoff_id") or "").startswith(PREFIX)
