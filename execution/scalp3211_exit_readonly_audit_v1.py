@@ -36,7 +36,6 @@ def classify_exit(*, plan:dict, submitted_at:str|None,
         result.update(requires_review=True,reasons=["OUT_OF_SCOPE_PLAN"])
         return result
     current=now.astimezone(KST)
-    close_imminent=current.hour*60+current.minute>=19*60+55
     if status in ("CLOSED","CANCELLED"):
         result["reasons"]=["BROKER_POSITION_MUST_STILL_BE_CONFIRMED"]
         return result
@@ -62,9 +61,6 @@ def classify_exit(*, plan:dict, submitted_at:str|None,
             result["reasons"]=["EXIT_MONITOR_ACTIVE"]
     else:
         result.update(requires_review=True,reasons=["UNKNOWN_EXIT_STATE"])
-    if close_imminent and status not in ("CLOSED","CANCELLED"):
-        result["requires_review"]=True
-        result["reasons"].append("MARKET_CLOSE_1955_OR_LATER_POSITION_NOT_CONFIRMED_FLAT")
     return result
 
 
