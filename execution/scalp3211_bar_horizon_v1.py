@@ -10,6 +10,9 @@ import sqlite3
 
 KST = ZoneInfo("Asia/Seoul")
 BAR_DB = Path.home() / "trading-system-stage3/runtime/stock_bar_raw_v1.sqlite3"
+# 3211 places SOR orders. The existing 5-minute bar collector stores the
+# route-qualified code, not the bare six-digit ticker.
+SOR_SAMSUNG_BAR_CODE = "005930_AL"
 
 
 def completed_bars_since(first_fill_at: str, *, db: Path = BAR_DB) -> int:
@@ -23,7 +26,7 @@ def completed_bars_since(first_fill_at: str, *, db: Path = BAR_DB) -> int:
         row = con.execute(
             "SELECT COUNT(*) FROM stock_bars "
             "WHERE symbol=? AND timeframe=? AND is_complete=1 AND bar_time>=?",
-            ("005930", "5m", cutoff),
+            (SOR_SAMSUNG_BAR_CODE, "5m", cutoff),
         ).fetchone()
     if row is None:
         raise RuntimeError("BAR_HORIZON_READ_FAILED")
