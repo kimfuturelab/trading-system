@@ -33,6 +33,17 @@ WRITE_DB = HOME / ".trading-execution-3211-v1-write.sqlite3"
 ACCOUNT_SUFFIX, SYMBOL = "3211", "005930"
 
 
+def session_close_due(at: datetime) -> bool:
+    """3211 same-day flat safety: submit a first approved EXIT before 20:00.
+
+    This does not promise a fill. Any existing unfilled EXIT is reconciled,
+    never resent, and the original global live-write gates remain binding.
+    """
+    at = at.astimezone(KST)
+    hhmm = at.hour * 100 + at.minute
+    return at.weekday() < 5 and 1955 <= hhmm < 2000
+
+
 def evaluate_watch(
     *,
     capital: dict, account_config: ExecutionConfig,
@@ -155,7 +166,7 @@ def main() -> int:
                         anchors.append(payload["first_fill_at"])
             if len(set(anchors))==1:
                 first_fill_at=anchors[0]
-                if completed_24_bar_timecut(first_fill_at):
+                if session_close_due(at) or completed_24_bar_timecut(first_fill_at):
                     row=v1.get_plan(decision["plan_id"])
                     if row and row.get("status") in ("EXIT_ARMED","POSITION"):
                         quote=read_quote_snapshot(broker,symbol=SYMBOL,exchange="SOR")
