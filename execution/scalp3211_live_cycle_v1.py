@@ -318,17 +318,10 @@ def once(*, execute: bool) -> dict:
         if (capital.get("estimated_assets_krw",0)>100_000_000 or
                 p.get("trade_date")!=today):
             return {"state":"WAIT_USER_TRIAL_OWNER_OR_DATE"}
-        # No extra market judgement from GOLD is required for a user-entered,
-        # recorded one-time trial. Order identity and risk price remain checked.
-        from quote_reader import read_quote_snapshot
-        quote=read_quote_snapshot(KiwoomCliBroker(mode="real"),
-                                  symbol=SYMBOL,exchange="SOR")
-        original_quote_time=datetime.fromisoformat(p["created_at"])
-        if ((t-original_quote_time).total_seconds()>120 or
-                quote.last_price!=p["planned_entry_price"]):
-            return {"state":"WAIT_FRESH_CURRENT_PRICE_REPLAN",
-                    "planned":p["planned_entry_price"],
-                    "current":quote.last_price}
+        # A current SOR quote was authenticated when creating this immutable
+        # one-time limit plan. Subsequent market changes must NOT reprice,
+        # invalidate, or endlessly block that previously chosen LIMIT price.
+        # The broker's cash, pending-order and one-intent checks remain below.
     else:
         packet=original_packet(today)
     if not user_one_time and not current_entry_is_allowed(

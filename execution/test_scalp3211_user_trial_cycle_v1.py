@@ -19,7 +19,7 @@ def main():
         "planned_entry_price":214500,"stop_price":208000,
         "planned_invest_amount":214500,"expected_loss":6500,
         "final_r":"USER_1SH_WARN_ONLY","stage_decision":"진입가능","status":"OPEN",
-        "created_at":datetime.now(engine.KST).isoformat(timespec="seconds")
+        "created_at":datetime.now(engine.KST).replace(hour=9,minute=0).isoformat(timespec="seconds")
     }
     packet = {"trade_date":today,"stages":{
         "stage0":{"value":{"self_gate":"통과"}},
@@ -67,8 +67,12 @@ def main():
         plans=stack.enter_context(patch.object(engine,"stage4_plans",return_value=[plan]))
         stack.enter_context(patch.object(engine,"entry_switch_on",return_value=True))
         stack.enter_context(patch.object(engine,"trial_authorized",return_value=True))
-        stack.enter_context(patch("quote_reader.read_quote_snapshot",
-                return_value=SimpleNamespace(last_price=214500)))
+        # The live SOR quote may now be 214000. Once planned at 214500,
+        # a user-directed limit order must retain 214500 without new quote
+        # lookups, repricing, timeout, or WAIT_FRESH_CURRENT_PRICE_REPLAN.
+        quote_recheck=stack.enter_context(patch(
+            "quote_reader.read_quote_snapshot",
+            side_effect=AssertionError("UNWANTED_POST_PLAN_QUOTE_RECHECK")))
         stack.enter_context(patch.object(engine,"original_packet",return_value=packet))
         stack.enter_context(patch.object(engine,"protective_watch_runtime_ready",return_value=True))
         approved=stack.enter_context(patch.object(
@@ -101,6 +105,7 @@ def main():
         assert result["exit_code"]==0
         assert result["post_submit_fill_and_exit"]["state"]=="FIRST_FILL_PROTECTED"
         assert submit.call_count==1 and register.call_count==1
+        quote_recheck.assert_not_called()
         assert approved.call_args.kwargs["allow_new"] is False
         result=engine.once(execute=True)
         assert result["state"]=="FIRST_FILL_PROTECTED",result
