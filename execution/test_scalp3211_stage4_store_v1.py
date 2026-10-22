@@ -18,7 +18,7 @@ def run():
                max_order_qty=1,orderable_cash_krw=285345,
                risk_reference_krw_1p5pct=4280)
     approval=[""]*29
-    approval[27]="주문 가능"
+    approval[24]="주문 가능"
     order=[""]*29
     order[1]="3211 시험계좌"
     order[2]="삼성전자"
@@ -39,7 +39,7 @@ def run():
     assert check(owner={**owner,"risk_reference_krw_1p5pct":1500})["status"]=="BLOCK"
     assert check(mode=None)["status"]=="BLOCK"
     assert check(facts={**facts,"quick_expected_loss":"100"})["status"]=="BLOCK"
-    approval[27]="주문 금지"
+    approval[24]="주문 금지"
     assert check()["status"]=="BLOCK"
     print("[PASS] original Stage4 account=3211, risk, approval and mode consistency")
 

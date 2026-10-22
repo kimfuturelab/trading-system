@@ -29,10 +29,10 @@ def approved_exit_contract(*, plan: dict, trade_date: str,
             or _n(plan.get("planned_qty")) != 1
             or plan.get("stage_decision") not in ("진입가능", "축소진입")):
         return None
-    # The '최종승인' field is column AB (zero-based index 27).
-    # Column AC is reserved for EXIT_DEADLINE; reading AC would
-    # incorrectly block every valid approved Stage4 trade.
-    if str(val(quick_approval_row, 27) or "").strip() not in (
+    # ORIGINAL 4단계 daily A18:AC19: '최종승인' is Y19 (index 24).
+    # AB19 is the separate ENTRY_HOLD_MODE; AC19 is EXIT_DEADLINE.
+    # Never let an adjacent, unrelated cell grant a real order.
+    if str(val(quick_approval_row, 24) or "").strip() not in (
             "주문 승인", "주문 가능", "매수 가능", "매수 승인"):
         return None
     label = str(val(quick_order_row, 1) or "").strip()
