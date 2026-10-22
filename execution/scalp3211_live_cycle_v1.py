@@ -24,7 +24,8 @@ from scalp3211_capital_owner_v1 import capture_3211_capital_owner
 from scalp3211_broker_fill_v1 import intent_id_from_stage4, verified_first_fill
 from scalp3211_exit_owner_v1 import approved_exit_contract
 from scalp3211_switch_v1 import (entry_switch_on, read_entry_control, MODULES,
-                                  module_modes_for_capital, trial_authorized)
+                                  module_modes_for_capital, trial_authorized,
+                                  entry_session_open)
 from scalp3211_isolated_stage4_bridge_v1 import persist_live as persist_approved_3211_stage4
 from scalp3211_fill_exit_bridge_v1 import register_existing_v1_plan
 from scalp3211_user_trial_v1 import (
@@ -307,7 +308,7 @@ def once(*, execute: bool) -> dict:
     if p.get("status") != "OPEN":
         return {"state":"WAIT_STAGE4_PLAN_OPEN_STATUS"}
     t = datetime.now(KST)
-    if t.weekday() >= 5 or (t.hour * 100 + t.minute) < 800 or (t.hour * 100 + t.minute) >= 1955:
+    if not entry_session_open(t):
         return {"state":"WAIT_SOR_SESSION_AND_SAFE_FLAT_BY_CLOSE"}
     if capital.get("status")!="BROKER_CAPITAL_VERIFIED_ONLY":
         return {"state":"WAIT_FLAT_3211_CAPITAL"}
