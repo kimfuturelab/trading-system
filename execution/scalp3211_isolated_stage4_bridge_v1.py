@@ -5,7 +5,10 @@ Neither this module nor its imports submits Kiwoom orders.
 """
 from __future__ import annotations
 import sqlite3
+import json
 import sys
+import subprocess
+import argparse
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -117,7 +120,40 @@ def approve_isolated(*, packet:dict, owner:dict, sheet_values:list,
             "warnings":warnings,"plan":plan,"contract":contract}
 
 
+def _sheet_interpreter_needed() -> bool:
+    try:
+        import google.auth
+        return False
+    except ImportError:
+        return True
+
+
+def _run_sheet_interpreter(*, mode:str, today:str,
+                          owner:dict|None=None)->dict:
+    """Reuse installed Stage3 Google Sheets venv; no global pip installation."""
+    python=ROOT/".venv-sheet-sync/bin/python"
+    if not python.is_file():
+        raise RuntimeError("3211_SHEET_VENV_NOT_INSTALLED")
+    result=subprocess.run(
+        [str(python),str(Path(__file__)),"--worker",mode,"--today",today],
+        input=json.dumps({"owner":owner},ensure_ascii=False),
+        text=True,capture_output=True,timeout=28,check=False)
+    if result.returncode!=0:
+        raise RuntimeError(
+            "3211_SHEET_WORKER_FAILED:"+str(result.returncode)+":"+
+            (result.stderr or result.stdout)[-200:])
+    try:
+        payload=json.loads(result.stdout.strip())
+    except (ValueError,TypeError) as exc:
+        raise RuntimeError("3211_SHEET_WORKER_NON_JSON") from exc
+    if not isinstance(payload,dict):
+        raise RuntimeError("3211_SHEET_WORKER_INVALID_PAYLOAD")
+    return payload
+
+
 def inspect_live(*, today:str, owner:dict|None=None)->dict:
+    if _sheet_interpreter_needed():
+        return _run_sheet_interpreter(mode="inspect",today=today,owner=owner)
     import json
     for p in (ROOT/"collector",ROOT/"fill-shadow-v1",
               HOME/"trading-system/collector"):
@@ -141,6 +177,9 @@ def inspect_live(*, today:str, owner:dict|None=None)->dict:
 
 
 def persist_live(*, today:str, broker_capital:dict|None=None)->dict:
+    if _sheet_interpreter_needed():
+        return _run_sheet_interpreter(mode="persist",today=today,
+                                       owner=broker_capital)
     result=inspect_live(today=today,owner=broker_capital)
     if result["status"]!="APPROVED_SOURCE_ONLY":
         return {"status":"WAIT_APPROVAL","reasons":result.get("reasons",[]),
@@ -162,3 +201,16 @@ def persist_live(*, today:str, broker_capital:dict|None=None)->dict:
         raise RuntimeError("ISOLATED_3211_PLAN_READBACK_MISMATCH")
     return {"status":"PLAN_PERSISTED","handoff_id":plan["handoff_id"],
             "orders_sent":False}
+
+
+if __name__=="__main__":
+    parser=argparse.ArgumentParser()
+    parser.add_argument("--worker",choices=("inspect","persist"),required=True)
+    parser.add_argument("--today",required=True)
+    args=parser.parse_args()
+    request=json.loads(sys.stdin.read() or "{}")
+    owner=request.get("owner")
+    payload=(inspect_live(today=args.today,owner=owner)
+             if args.worker=="inspect" else
+             persist_live(today=args.today,broker_capital=owner))
+    print(json.dumps(payload,ensure_ascii=False,default=str))
