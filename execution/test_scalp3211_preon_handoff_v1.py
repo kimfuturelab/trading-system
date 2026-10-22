@@ -11,7 +11,8 @@ from scalp3211_switch_v1 import entry_switch_on, read_entry_control, set_entry_s
 
 def main():
     approval = [""] * 29
-    approval[27] = "주문 가능"  # AB19 final approval, not AC19
+    approval[24] = "주문 가능"  # Y19 is the original Stage4 final approval
+    approval[27] = "ENTRY_HOLD_MODE_NOT_APPROVAL"
     approval[28] = "EXIT_DEADLINE_NOT_APPROVAL"
     order = [""] * 29
     order[1] = "3211 시험계좌"
@@ -27,9 +28,10 @@ def main():
     contract = approved_exit_contract(
         plan=plan, trade_date="2026-10-21",
         quick_approval_row=approval, quick_order_row=order)
-    assert contract is not None, "AB19 valid approval incorrectly blocked"
+    assert contract is not None, "Y19 valid approval incorrectly blocked"
     assert contract["stop_price"] == 198000
-    approval[27] = "주문 금지"
+    approval[24] = "주문 금지"
+    approval[27] = "주문 가능"  # unrelated AB19 must never authorize a BUY
     assert approved_exit_contract(
         plan=plan, trade_date="2026-10-21",
         quick_approval_row=approval, quick_order_row=order) is None
@@ -42,7 +44,7 @@ def main():
         assert entry_switch_on(path)
         assert set_entry_state("OFF",path)["state"] == "OFF"
         assert not entry_switch_on(path)
-    print("[PASS] AB19 approval + restricted 3211 exit contract + isolated OFF/ON")
+    print("[PASS] Y19 approval + AB19 cannot authorize + 3211 OFF/ON")
 
 
 if __name__ == "__main__":
