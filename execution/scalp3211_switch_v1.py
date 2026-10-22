@@ -115,6 +115,13 @@ def set_module_state(name: str, value: str, path: Path = CONTROL) -> dict:
     return _write_control(doc, path)
 
 
+def entry_session_open(at: datetime) -> bool:
+    """Existing 3211 SOR order window: weekdays 08:00 <= KST < 20:00."""
+    local=at.astimezone(KST)
+    hm=local.hour*100+local.minute
+    return local.weekday()<5 and 800<=hm<2000
+
+
 def trial_authorized(today: str, path: Path = CONTROL) -> bool:
     control=read_entry_control(path)
     return (control.get("reason")=="CONFIGURED"
@@ -178,8 +185,7 @@ def arm_today_one_click(path: Path = CONTROL,
     if any(str(x.get("status") or "") not in ("CLOSED","CANCELLED")
            for x in ExitPlanStore(Path.home()/".trading-execution-3211-v1.sqlite3").list_plans()):
         raise ValueError("3211_EXISTING_ACTIVE_EXIT_PLAN")
-    if (datetime.now(KST).weekday()>=5 or not (
-            800 <= datetime.now(KST).hour*100+datetime.now(KST).minute < 1955)):
+    if not entry_session_open(datetime.now(KST)):
         raise ValueError("3211_OUTSIDE_USER_TRIAL_ENTRY_SESSION")
     raw=env_file.read_text(encoding="utf-8")
     keys={"KILL_SWITCH":"OFF",
