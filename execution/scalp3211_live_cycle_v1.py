@@ -23,7 +23,8 @@ from safety import ExecutionConfig, load_env_file
 from scalp3211_capital_owner_v1 import capture_3211_capital_owner
 from scalp3211_broker_fill_v1 import intent_id_from_stage4, verified_first_fill
 from scalp3211_exit_owner_v1 import approved_exit_contract
-from scalp3211_switch_v1 import entry_switch_on
+from scalp3211_switch_v1 import (entry_switch_on, read_entry_control, MODULES,
+                                  module_modes_for_capital)
 from scalp3211_isolated_stage4_bridge_v1 import persist_live as persist_approved_3211_stage4
 from scalp3211_fill_exit_bridge_v1 import register_existing_v1_plan
 from state_store import StateStore
@@ -65,23 +66,35 @@ def original_packet(today: str) -> dict:
     return p
 
 
-def current_entry_is_allowed(packet: dict, plan: dict) -> bool:
+def current_entry_is_allowed(packet: dict, plan: dict, modules:dict|None=None) -> bool:
+    switches = read_entry_control()["modules"] if modules is None else {
+        k:modules.get(k,"ON") for k in MODULES}
+    def on(name): return switches[name]=="ON"
     stages=packet.get("stages") or {}
-    for name in ("stage1","stage2","rejuscha","entry","stage4"):
-        if (stages.get(name) or {}).get("status")!="OK":
+    for name in ("stage1","stage2","entry","stage4"):
+        if on(name) and (stages.get(name) or {}).get("status")!="OK":
             return False
-    regime=stages["stage1"]
-    entry=stages["entry"]["value"]
-    s4=stages["stage4"]["value"]
-    score=(stages["rejuscha"].get("value") or {})
-    selfgate=((stages.get("stage0") or {}).get("value") or {}).get("self_gate")
-    if selfgate not in ("통과","통과(감속)"):
+    for axis in ("material","supply","chart"):
+        axis_value=(((stages.get("rejuscha") or {}).get("value") or {})
+                    .get(axis) or {})
+        if on(axis) and "status" in axis_value and axis_value["status"]!="OK":
+            return False
+    if all(on(x) for x in ("material","supply","chart")) and (
+        stages.get("rejuscha") or {}).get("status")!="OK":
         return False
-    if (regime.get("source_at")!=packet["trade_date"]
-            or entry.get("action_status")!="READY_CANDIDATE"
-            or score.get("action_status")!="READY"
-            or s4.get("action_status")!="READY"
-            or entry.get("target_symbol")!=SYMBOL
+    regime=stages.get("stage1") or {}
+    entry=(stages.get("entry") or {}).get("value") or {}
+    s4=(stages.get("stage4") or {}).get("value") or {}
+    score=(stages.get("rejuscha") or {}).get("value") or {}
+    selfgate=((stages.get("stage0") or {}).get("value") or {}).get("self_gate")
+    if on("stage0") and selfgate not in ("통과","통과(감속)"):
+        return False
+    if ((on("stage1") and regime.get("source_at")!=packet["trade_date"])
+            or (on("entry") and entry.get("action_status")!="READY_CANDIDATE")
+            or (all(on(x) for x in ("material","supply","chart"))
+                and score.get("action_status")!="READY")
+            or (on("stage4") and s4.get("action_status")!="READY")
+            or (on("entry") and entry.get("target_symbol")!=SYMBOL)
             or s4.get("handoff_id")!=plan.get("handoff_id")
             or s4.get("symbol_code")!=SYMBOL
             or s4.get("entry_price")!=plan.get("planned_entry_price")
@@ -89,7 +102,7 @@ def current_entry_is_allowed(packet: dict, plan: dict) -> bool:
             or s4.get("qty")!=1
             or s4.get("final_r")!=plan.get("final_r")):
         return False
-    if plan.get("stage_decision") not in ("진입가능","축소진입"):
+    if on("stage4") and plan.get("stage_decision") not in ("진입가능","축소진입"):
         return False
     if (plan.get("planned_qty")!=1 or
             plan.get("planned_invest_amount")!=plan.get("planned_entry_price") or
@@ -105,14 +118,21 @@ def current_entry_is_allowed(packet: dict, plan: dict) -> bool:
         score.get("approved_method")
     )
     if not isinstance(original_method, str):
-        return False
+        if on("entry") and on("stage4"):
+            return False
+        original_method=""
     method=original_method.strip()
-    if (not method or method not in (score.get("executable_actions") or [])
-            or method not in str((regime.get("value") or {}).get("allowed_strategy") or "")):
+    if on("entry") and not method:
+        return False
+    if (method and all(on(x) for x in ("material","supply","chart"))
+            and method not in (score.get("executable_actions") or [])):
+        return False
+    if (on("stage1") and method and
+            method not in str((regime.get("value") or {}).get("allowed_strategy") or "")):
         return False
     # RED allows only a confirmed special-event entry. A mere item in the
     # allowed-method list is not evidence that the event actually occurred.
-    if (regime.get("value") or {}).get("max_hold_stage") == "EXIT_ONLY":
+    if on("stage1") and (regime.get("value") or {}).get("max_hold_stage") == "EXIT_ONLY":
         confirmed = (
             entry.get("confirmed_special_event") is True
             and entry.get("special_event_method") == method
@@ -278,7 +298,7 @@ def once(*, execute: bool) -> dict:
     if capital.get("status")!="BROKER_CAPITAL_VERIFIED_ONLY":
         return {"state":"WAIT_FLAT_3211_CAPITAL"}
     packet=original_packet(today)
-    if not current_entry_is_allowed(packet,p):
+    if not current_entry_is_allowed(packet,p,modules=module_modes_for_capital(capital)):
         return {"state":"WAIT_GOLD_AND_STAGE4_APPROVAL",
                 "entry_action":((packet.get("stages") or {}).get("entry") or {}).get("value",{}).get("action_status"),
                 "stage4_action":((packet.get("stages") or {}).get("stage4") or {}).get("value",{}).get("action_status"),
