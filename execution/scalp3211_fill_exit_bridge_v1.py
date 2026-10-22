@@ -88,12 +88,11 @@ def register_existing_v1_plan(
     risk = approved_exit.get("max_loss_krw")
     if type(risk) is not int or (entry-stop) > risk:
         raise ValueError("ACTUAL_FIRST_FILL_RISK_EXCEEDED")
-    # The absolute deadline is only a final same-day fail-safe. The GOLD 24
-    # completed-bar timecut is evaluated by the continuous V1 watcher.
-    entry_at = datetime.fromisoformat(fill["first_fill_at"]).astimezone(KST)
-    end_at = entry_at.replace(hour=19, minute=55, second=0, microsecond=0)
-    if end_at <= entry_at:
-        raise ValueError("MARKET_CLOSE_SAFETY_DEADLINE_PASSED")
+    # V1's generic schema requires a non-null timecut_at. For this 3211
+    # 24-confirmed-bar policy, disable wall-clock-based sell triggers entirely:
+    # the watcher explicitly reserves TIMECUT only after 24 completed bars.
+    # The far-future sentinel is a schema placeholder, NOT a liquidation time.
+    end_at = datetime(9999, 12, 31, 23, 59, tzinfo=KST)
     digest = sha256((handoff_id+"|"+fill["order_no"]+"|"+fill["fill_no"]).encode()).hexdigest()[:18]
     plan = ExitPlan("SCALP3211-"+digest, "005930", 1, entry, stop, target, end_at)
     v1 = store or ExitPlanStore(EXIT_DB)
