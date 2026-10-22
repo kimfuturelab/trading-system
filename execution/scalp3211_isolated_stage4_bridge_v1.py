@@ -12,6 +12,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from scalp3211_gold_signal_sheet_v1 import decision_fields, SHEET, KST
+from scalp3211_switch_v1 import module_modes_for_capital
 from scalp3211_capital_owner_v1 import capture_3211_capital_owner
 
 HOME=Path.home()
@@ -34,8 +35,11 @@ def exact_int(value):
 def approve_isolated(*, packet:dict, owner:dict, sheet_values:list,
                      now:datetime)->dict:
     """Match every sensitive sheet field to BOTH original GOLD and 3211 broker."""
-    result=decision_fields(packet,now=now)
+    result=decision_fields(packet,now=now,
+                           modules=module_modes_for_capital(owner))
     reasons=list(result["reasons"])
+    warnings=list(result.get("warnings",[]))
+    modes=module_modes_for_capital(owner)
     if result["status"]!="READY":
         return {"status":"WAIT_ORIGINAL_GOLD","reasons":reasons}
     data=result["values"]
@@ -45,9 +49,9 @@ def approve_isolated(*, packet:dict, owner:dict, sheet_values:list,
         if i<0 or i>=len(sheet_values) or not sheet_values[i]:
             return None
         return sheet_values[i][0]
-    def same(value,expected,why):
+    def same(value,expected,why,module=None):
         if value!=expected:
-            reasons.append(why)
+            (warnings if module and modes[module]=="OFF" else reasons).append(why)
     same(str(get(3)),data["trade_date"],"TRADE_DATE_SHEET_MISMATCH")
     same(str(get(4)),"3211","ISOLATED_ACCOUNT_NOT_3211")
     same(str(get(5)),"005930","ISOLATED_SYMBOL_NOT_SAMSUNG")
@@ -87,8 +91,8 @@ def approve_isolated(*, packet:dict, owner:dict, sheet_values:list,
     if (exact_int(get(16))!=1 or exact_int(get(17))!=price-stop or
             exact_int(get(18))!=price):
         reasons.append("ISOLATED_STAGE4_QUANTITY_LOSS_OR_COST_MISMATCH")
-    same(str(get(22)),"READY","GOLD_STAGE4_INTERSECTION_NOT_READY")
-    same(str(get(23)),"주문 가능","ISOLATED_FINAL_APPROVAL_NOT_GRANTED")
+    same(str(get(22)),"READY","GOLD_STAGE4_INTERSECTION_NOT_READY","stage4")
+    same(str(get(23)),"주문 가능","ISOLATED_FINAL_APPROVAL_NOT_GRANTED","stage4")
     if (type(cash) is not int or type(risk) is not int or
             price>cash or price-stop>risk or price-stop<=0):
         reasons.append("3211_INDEPENDENT_CAPITAL_OR_RISK_LIMIT")
@@ -110,7 +114,7 @@ def approve_isolated(*, packet:dict, owner:dict, sheet_values:list,
               "timecut_policy":"GOLD_DAY_24_COMPLETE_5M_BARS",
               "account_alias":"test","symbol":"005930","execution_qty":1}
     return {"status":"APPROVED_SOURCE_ONLY", "reasons":[],
-            "plan":plan,"contract":contract}
+            "warnings":warnings,"plan":plan,"contract":contract}
 
 
 def inspect_live(*, today:str, owner:dict|None=None)->dict:
