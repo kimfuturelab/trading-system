@@ -75,7 +75,8 @@ def register_existing_v1_plan(
     handoff_id = str(fill.get("handoff_id") or "")
     if not handoff_id or handoff_id != approved_exit.get("handoff_id"):
         raise ValueError("EXIT_OWNER_HANDOFF_MISMATCH")
-    if approved_exit.get("source") != "STAGE4_APPROVED":
+    if approved_exit.get("source") not in (
+            "STAGE4_APPROVED","USER_DIRECT_3211_ONE_TIME"):
         raise ValueError("APPROVED_STRATEGY_SOURCE_REQUIRED")
     if approved_exit.get("timecut_policy") != "GOLD_DAY_24_COMPLETE_5M_BARS":
         raise ValueError("24_CONFIRMED_BAR_POLICY_REQUIRED")

@@ -24,9 +24,11 @@ from scalp3211_capital_owner_v1 import capture_3211_capital_owner
 from scalp3211_broker_fill_v1 import intent_id_from_stage4, verified_first_fill
 from scalp3211_exit_owner_v1 import approved_exit_contract
 from scalp3211_switch_v1 import (entry_switch_on, read_entry_control, MODULES,
-                                  module_modes_for_capital)
+                                  module_modes_for_capital, trial_authorized)
 from scalp3211_isolated_stage4_bridge_v1 import persist_live as persist_approved_3211_stage4
 from scalp3211_fill_exit_bridge_v1 import register_existing_v1_plan
+from scalp3211_user_trial_v1 import (
+    build_user_trial,save_user_trial,trial_contract,PREFIX, SOURCE)
 from state_store import StateStore
 from v0_engine import cmd_live_order, open_order_rows, sync_open_intents
 
@@ -146,6 +148,10 @@ def authenticated_exit_spec(plan: dict, today: str) -> dict | None:
     # The 3211 exit owner must be the same isolated sheet + original GOLD
     # proof used to persist the 3211 Stage4 plan, never DAY's quickcalc.
     from scalp3211_isolated_stage4_bridge_v1 import inspect_live
+    if str(plan.get("handoff_id") or "").startswith(PREFIX):
+        if not trial_authorized(today):
+            return None
+        return trial_contract(plan)
     original=inspect_live(today=today)
     if original.get("status")!="APPROVED_SOURCE_ONLY":
         return None
@@ -169,7 +175,7 @@ def approved_contract_for_cycle(plan: dict, today: str, *, allow_new: bool) -> d
         contract=json.loads(path.read_text(encoding="utf-8"))
         if (contract.get("handoff_id") != plan["handoff_id"] or
                 contract.get("trade_date") != today or
-                contract.get("source") != "STAGE4_APPROVED"):
+                contract.get("source") not in ("STAGE4_APPROVED",SOURCE)):
             raise RuntimeError("IMMUTABLE_EXIT_CONTRACT_MISMATCH")
         return contract
     if not allow_new:
@@ -250,12 +256,20 @@ def once(*, execute: bool) -> dict:
                    "reason":"BROKER_HAS_SHARE_WITHOUT_AUTHENTICATED_BUY_AND_V1_EXIT_PLAN"}
     plans=stage4_plans(today)
     if not plans and entry_switch_on():
-        # The original Stage4 sheet is the only approval owner. Persist only
-        # its 3211-specific approved 1-share row into the EXISTING plan DB.
-        # This does not invoke Kiwoom orders or relax the V0 buy gates.
-        source=persist_approved_3211_stage4(today=today,broker_capital=capital)
-        if source.get("status") in ("PLAN_PERSISTED","ALREADY_PERSISTED"):
+        if trial_authorized(today):
+            # The user's one-off 3211 current-price instruction supplies the
+            # entry decision. This is never masqueraded as GOLD approval.
+            from quote_reader import read_quote_snapshot
+            quote=read_quote_snapshot(KiwoomCliBroker(mode="real"),
+                                      symbol=SYMBOL,exchange="SOR")
+            trial=build_user_trial(quote=quote,capital=capital,
+                                   today=today,authorized=True)
+            save_user_trial(trial)
             plans=stage4_plans(today)
+        else:
+            source=persist_approved_3211_stage4(today=today,broker_capital=capital)
+            if source.get("status") in ("PLAN_PERSISTED","ALREADY_PERSISTED"):
+                plans=stage4_plans(today)
     if len(plans)!=1:
         return orphan_halt if orphan_holding else {
             "state":"WAIT_STAGE4_ONE_APPROVED_PLAN","count":len(plans)}
@@ -297,8 +311,28 @@ def once(*, execute: bool) -> dict:
         return {"state":"WAIT_SOR_SESSION_AND_SAFE_FLAT_BY_CLOSE"}
     if capital.get("status")!="BROKER_CAPITAL_VERIFIED_ONLY":
         return {"state":"WAIT_FLAT_3211_CAPITAL"}
-    packet=original_packet(today)
-    if not current_entry_is_allowed(packet,p,modules=module_modes_for_capital(capital)):
+    user_one_time=str(p.get("handoff_id") or "").startswith(PREFIX)
+    if user_one_time and not trial_authorized(today):
+        return {"state":"WAIT_USER_TRIAL_SESSION_AUTHORIZATION"}
+    if user_one_time:
+        if (capital.get("estimated_assets_krw",0)>100_000_000 or
+                p.get("trade_date")!=today):
+            return {"state":"WAIT_USER_TRIAL_OWNER_OR_DATE"}
+        # No extra market judgement from GOLD is required for a user-entered,
+        # recorded one-time trial. Order identity and risk price remain checked.
+        from quote_reader import read_quote_snapshot
+        quote=read_quote_snapshot(KiwoomCliBroker(mode="real"),
+                                  symbol=SYMBOL,exchange="SOR")
+        original_quote_time=datetime.fromisoformat(p["created_at"])
+        if ((t-original_quote_time).total_seconds()>120 or
+                quote.last_price!=p["planned_entry_price"]):
+            return {"state":"WAIT_FRESH_CURRENT_PRICE_REPLAN",
+                    "planned":p["planned_entry_price"],
+                    "current":quote.last_price}
+    else:
+        packet=original_packet(today)
+    if not user_one_time and not current_entry_is_allowed(
+            packet,p,modules=module_modes_for_capital(capital)):
         return {"state":"WAIT_GOLD_AND_STAGE4_APPROVAL",
                 "entry_action":((packet.get("stages") or {}).get("entry") or {}).get("value",{}).get("action_status"),
                 "stage4_action":((packet.get("stages") or {}).get("stage4") or {}).get("value",{}).get("action_status"),
@@ -308,7 +342,8 @@ def once(*, execute: bool) -> dict:
     price=p["planned_entry_price"]
     loss=p["expected_loss"]
     if (price>capital["orderable_cash_krw"] or
-            loss>capital["risk_reference_krw_1p5pct"]):
+            (not user_one_time and
+             loss>capital["risk_reference_krw_1p5pct"])):
         return {"state":"WAIT_3211_CASH_AND_R"}
     if open_order_rows(snapshot) or state.open_intents():
         return {"state":"WAIT_EXISTING_BROKER_OR_LOCAL_ORDER"}
