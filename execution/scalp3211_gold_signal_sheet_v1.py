@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -19,8 +20,17 @@ SHEET="3211_독립계산"
 
 
 def _integer(value):
-    if type(value) is int and value>0:
-        return value
+    # The original GOLD producer's num() serializes every numeric value as
+    # float (e.g. 1.0 share). Accept only mathematically exact positive
+    # integers; never truncate or round a fractional quantity or price.
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        d = Decimal(str(value).replace(",", "").replace("₩", "").strip())
+        if d.is_finite() and d > 0 and d == d.to_integral_value():
+            return int(d)
+    except (InvalidOperation, ValueError, TypeError):
+        pass
     return None
 
 

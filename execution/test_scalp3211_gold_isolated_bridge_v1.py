@@ -35,6 +35,17 @@ def test():
     p=valid_packet()
     result=decision_fields(p,now=NOW)
     assert result["status"]=="READY",result
+    # Real decision_packet_v1.py num() outputs integral floats.
+    # The old strict type-is-int parser rejected even valid 1.0 shares.
+    real_shape=valid_packet()
+    real_shape["stages"]["stage4"]["value"].update(
+        entry_price=200000.0,stop_price=198000.0,
+        target1_price=202000.0,qty=1.0,
+        invest_amount=200000.0,expected_loss=2000.0)
+    assert decision_fields(real_shape,now=NOW)["status"]=="READY"
+    for bad in (1.5, True, 0, -1, float("nan")):
+        real_shape["stages"]["stage4"]["value"]["qty"]=bad
+        assert decision_fields(real_shape,now=NOW)["status"]!="READY"
     values=[[] for _ in range(21)]
     mapping={3:"2026-10-21",4:"3211",5:"005930",
              6:"285,345",7:"285,345",8:"4,280",
