@@ -12,6 +12,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from scalp3211_switch_v1 import read_entry_control, MODULES
 
 KST=ZoneInfo("Asia/Seoul")
 HOME=Path.home()
@@ -34,11 +35,14 @@ def _integer(value):
     return None
 
 
-def decision_fields(packet:dict, *, now:datetime)->dict:
+def decision_fields(packet:dict, *, now:datetime, modules:dict|None=None)->dict:
+    switches = read_entry_control()["modules"] if modules is None else {
+        k: modules.get(k, "ON") for k in MODULES}
     problems=[]
-    def require(condition,reason):
+    warnings=[]
+    def require(condition,reason,module=None):
         if not condition:
-            problems.append(reason)
+            (warnings if module and switches[module]=="OFF" else problems).append(reason)
     today=now.astimezone(KST).date().isoformat()
     trade_date=packet.get("trade_date")
     require(trade_date==today,"GOLD_SESSION_DATE_MISMATCH")
@@ -52,13 +56,20 @@ def decision_fields(packet:dict, *, now:datetime)->dict:
     except (ValueError,TypeError,KeyError):
         require(False,"GOLD_CAPTURE_TIME_MISSING")
     stages=packet.get("stages") or {}
-    for stage in ("stage0","stage1","stage2","rejuscha","entry","stage4"):
+    for stage in ("stage0","stage1","stage2","entry","stage4"):
         require((stages.get(stage) or {}).get("status")=="OK",
-                stage.upper()+"_NOT_OK")
+                stage.upper()+"_NOT_OK",stage)
+    for axis in ("material","supply","chart"):
+        value=((stages.get("rejuscha") or {}).get("value") or {}).get(axis) or {}
+        if "status" in value:
+            require(value["status"]=="OK",axis.upper()+"_NOT_OK",axis)
+    if (stages.get("rejuscha") or {}).get("status")!="OK":
+        require(False,"REJUSCHA_NOT_OK",
+                "material" if any(switches[x]=="OFF" for x in ("material","supply","chart")) else None)
     require((stages.get("stage1") or {}).get("source_at")==today,
-            "REGIME_SOURCE_NOT_CURRENT_SESSION")
+            "REGIME_SOURCE_NOT_CURRENT_SESSION","stage1")
     require(str((stages.get("stage2") or {}).get("source_at") or "").startswith(today),
-            "RISK_STAGE2_SOURCE_NOT_CURRENT_SESSION")
+            "RISK_STAGE2_SOURCE_NOT_CURRENT_SESSION","stage2")
     r=(stages.get("stage1") or {}).get("value") or {}
     v=(stages.get("stage4") or {}).get("value") or {}
     entry=(stages.get("entry") or {}).get("value") or {}
@@ -68,15 +79,18 @@ def decision_fields(packet:dict, *, now:datetime)->dict:
             "GOLD_3211_ACCOUNT_PROOF_MISSING")
     require(v.get("symbol_code")=="005930" and
             entry.get("target_symbol")=="005930",
-            "GOLD_SAMSUNG_SYMBOL_PROOF_MISSING")
+            "GOLD_SAMSUNG_SYMBOL_PROOF_MISSING",
+            "entry" if v.get("symbol_code")=="005930" else None)
     require(v.get("action_status")=="READY" and
             v.get("final_approval") in ("주문 가능","매수 승인"),
-            "STAGE4_FINAL_APPROVAL_MISSING")
+            "STAGE4_FINAL_APPROVAL_MISSING","stage4")
     require(v.get("stage_decision") in ("진입가능","축소진입"),
-            "STAGE4_ORIGINAL_DECISION_MISSING")
-    require(entry.get("action_status")=="READY_CANDIDATE" and
-            supply.get("action_status")=="READY",
-            "GOLD_ENTRY_OR_REJUSCHA_BLOCKED")
+            "STAGE4_ORIGINAL_DECISION_MISSING","stage4")
+    require(entry.get("action_status")=="READY_CANDIDATE",
+            "GOLD_ENTRY_BLOCKED","entry")
+    require(supply.get("action_status")=="READY",
+            "GOLD_REJUSCHA_BLOCKED",
+            "material" if any(switches[x]=="OFF" for x in ("material","supply","chart")) else None)
     require(v.get("handoff_id") and v.get("handoff_status")=="READY"
             and v.get("sync_status")=="READY",
             "STAGE4_REAL_HANDOFF_MISSING")
@@ -90,16 +104,20 @@ def decision_fields(packet:dict, *, now:datetime)->dict:
             "STAGE4_PRICE_STOP_TARGET_OR_LOSS_INVALID")
     require(entry.get("final_r")==v.get("final_r") and
             isinstance(v.get("final_r"),str) and bool(v.get("final_r")),
-            "STAGE4_R_PROVENANCE_MISMATCH")
+            "STAGE4_R_PROVENANCE_MISMATCH","stage2")
     method=v.get("approved_method")
     require(isinstance(method,str) and bool(method) and
             method in (supply.get("executable_actions") or []) and
             method in str(r.get("allowed_strategy") or ""),
-            "APPROVED_METHOD_NOT_IN_ORIGINAL_INTERSECTION")
+            "APPROVED_METHOD_NOT_IN_ORIGINAL_INTERSECTION",
+            "entry" if switches["entry"]=="OFF" else
+            "stage4" if switches["stage4"]=="OFF" else
+            "stage1" if switches["stage1"]=="OFF" else
+            "material" if any(switches[x]=="OFF" for x in ("material","supply","chart")) else None)
     if r.get("max_hold_stage")=="EXIT_ONLY":
         require(entry.get("confirmed_special_event") is True and
                 entry.get("special_event_method")==method,
-                "SPECIAL_EVENT_NOT_CONFIRMED")
+                "SPECIAL_EVENT_NOT_CONFIRMED","stage1")
     timestamp=v.get("input_at")
     try:
         at=datetime.fromisoformat(str(timestamp).replace("Z","+00:00"))
@@ -109,10 +127,11 @@ def decision_fields(packet:dict, *, now:datetime)->dict:
     except (ValueError,TypeError):
         require(False,"STAGE4_INPUT_TIME_INVALID")
     operation=((stages.get("stage0") or {}).get("value") or {}).get("next_operation_mode")
-    require(operation in ("생활비모드","복리모드"),"OPERATION_MODE_MISSING")
+    require(operation in ("생활비모드","복리모드"),
+            "OPERATION_MODE_MISSING","stage0")
     if problems:
-        return {"status":"PENDING","reasons":problems,"values":None}
-    return {"status":"READY","reasons":[],"values":{
+        return {"status":"PENDING","reasons":problems,"warnings":warnings,"values":None}
+    return {"status":"READY","reasons":[],"warnings":warnings,"values":{
         "handoff_id":str(v["handoff_id"]),"method":method,
         "entry":price,"stop":stop,"target1":target,
         "final_r":v["final_r"],"input_at":str(timestamp),
@@ -128,8 +147,10 @@ def sheet_updates(result:dict)->list[dict]:
     ]
     tail=[values.get("final_r",""),values.get("input_at",""),
           values.get("mode",""),result["status"]]
-    memo="GOLD 승인 원본 확인" if result["status"]=="READY" else (
-        "승인 대기: "+",".join(result.get("reasons",[])[:5]))
+    memo=("경고·사용자 OFF: "+",".join(result.get("warnings",[])[:5])
+          if result["status"]=="READY" and result.get("warnings")
+          else "GOLD 승인 원본 확인" if result["status"]=="READY" else
+          "승인 대기: "+",".join(result.get("reasons",[])[:5]))
     return [
         {"sheet":SHEET,"range":"B11:B15","values":[[x] for x in cells]},
         {"sheet":SHEET,"range":"B19:B22","values":[[x] for x in tail]},
