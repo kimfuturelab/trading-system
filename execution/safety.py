@@ -122,14 +122,14 @@ def validate_order_request(
         if not cfg.allow_live_orders:
             reasons.append("LIVE_ORDERS_NOT_EXPLICITLY_ALLOWED")
         today = current.strftime("%Y-%m-%d")
-        if cfg.daily_arm_date != today:
+        if side == "BUY" and cfg.daily_arm_date != today:
             reasons.append("DAILY_ARM_DATE_MISMATCH")
 
     # PAPER는 실제 broker write를 호출하면 안 되고 상위 레이어에서 시뮬레이션해야 함.
     return reasons
 
 
-def assert_live_write_allowed(cfg: ExecutionConfig) -> None:
+def assert_live_write_allowed(cfg: ExecutionConfig, *, side: str = "BUY") -> None:
     """broker의 실제 주문 메서드 직전에 한 번 더 호출하는 독립 write guard."""
     if cfg.auto_mode not in {"LIVE_SMALL", "LIVE"}:
         raise RuntimeError(f"실주문 차단: AUTO_MODE={cfg.auto_mode}")
@@ -138,5 +138,5 @@ def assert_live_write_allowed(cfg: ExecutionConfig) -> None:
     if not cfg.allow_live_orders:
         raise RuntimeError("실주문 차단: ALLOW_LIVE_ORDERS!=YES")
     today = datetime.now(KST).strftime("%Y-%m-%d")
-    if cfg.daily_arm_date != today:
+    if str(side).upper() != "SELL" and cfg.daily_arm_date != today:
         raise RuntimeError("실주문 차단: DAILY_ARM_DATE가 오늘과 다름")
