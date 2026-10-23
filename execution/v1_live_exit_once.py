@@ -76,7 +76,7 @@ def run_live_exit_once(
     if exchange not in {"KRX", "NXT", "SOR"}:
         raise RuntimeError("LIVE_EXIT_BLOCKED: exchange must be KRX|NXT|SOR")
 
-    assert_live_write_allowed(cfg)
+    assert_live_write_allowed(cfg, side="SELL")
     row = v1.get_plan(plan_id)
     if row is None:
         raise RuntimeError(f"LIVE_EXIT_BLOCKED: plan_id 없음: {plan_id}")
