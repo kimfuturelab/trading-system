@@ -35,6 +35,30 @@ def _integer(value):
     return None
 
 
+def stage0_independent_of_disabled_stage5(stage0: dict, *, today: str) -> bool:
+    """An OFF weekly module cannot by itself block an otherwise verified 0-gate.
+
+    This never approves an incomplete self-check, missing account verification,
+    old source date, or an explicit 0-gate block. The shared GOLD producer
+    remains unchanged; this applies only to the isolated 3211 viewer.
+    """
+    if stage0.get("status") == "OK":
+        return True
+    reasons = {x for x in str(stage0.get("reason") or "").split("|") if x}
+    value = stage0.get("value") or {}
+    return (
+        reasons == {"STAGE5_NOT_OK"}
+        and stage0.get("source_at") == today
+        and value.get("self_gate") == "통과"
+        and value.get("mode_gate") == "통과"
+        and value.get("capital_gate") == "통과"
+        and value.get("account_gate") == "통과"
+        and value.get("start_decision") == "허용"
+        and value.get("active_account") not in (None, "", "대기")
+        and value.get("next_operation_mode") in ("생활비모드", "복리모드")
+    )
+
+
 def decision_fields(packet:dict, *, now:datetime, modules:dict|None=None)->dict:
     switches = read_entry_control()["modules"] if modules is None else {
         k: modules.get(k, "ON") for k in MODULES}
@@ -57,8 +81,13 @@ def decision_fields(packet:dict, *, now:datetime, modules:dict|None=None)->dict:
         require(False,"GOLD_CAPTURE_TIME_MISSING")
     stages=packet.get("stages") or {}
     for stage in ("stage0","stage1","stage2","entry","stage4"):
-        require((stages.get(stage) or {}).get("status")=="OK",
-                stage.upper()+"_NOT_OK",stage)
+        original = stages.get(stage) or {}
+        verified = original.get("status") == "OK"
+        if stage == "stage0" and not verified and switches["stage5"] == "OFF":
+            verified = stage0_independent_of_disabled_stage5(original, today=today)
+            if verified:
+                warnings.append("STAGE5_DISABLED_STAGE0_OTHER_GATES_VERIFIED")
+        require(verified,stage.upper()+"_NOT_OK",stage)
     for axis in ("material","supply","chart"):
         value=((stages.get("rejuscha") or {}).get("value") or {}).get(axis) or {}
         if "status" in value:
