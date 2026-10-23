@@ -139,7 +139,7 @@ def main() -> int:
                   "result":asdict(result),"final_plan":v1.get_plan(plan["plan_id"]),
                   "broker_write":False}
     if decision["status"]=="RUN_LIVE_EXIT_ONCE":
-        if cfg.kill_switch or not cfg.allow_live_orders or cfg.daily_arm_date!=at.date().isoformat():
+        if cfg.kill_switch or not cfg.allow_live_orders:
             decision={"status":"HALT","reasons":["LIVE_ARM_OR_KILL_SWITCH_NOT_READY"],"broker_write":False}
         else:
             broker=KiwoomCliBroker(mode="real")
