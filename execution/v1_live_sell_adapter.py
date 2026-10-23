@@ -80,7 +80,7 @@ def execute_live_sell_once(
             "LIVE_SELL_DUPLICATE_BLOCKED: existing write journal requires broker reconciliation"
         ) from exc
 
-    assert_live_write_allowed(cfg)
+    assert_live_write_allowed(cfg, side="SELL")
 
     try:
         result = broker.submit_order(
