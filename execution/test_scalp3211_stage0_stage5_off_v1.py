@@ -24,7 +24,7 @@ def complete_stage0():
 def main():
     packet=complete_stage0()
     original=deepcopy(packet)
-    assert decision_fields(packet,now=NOW)["status"]=="PENDING"
+    assert decision_fields(packet,now=NOW,modules={"stage5":"ON"})["status"]=="PENDING"
     resolved=decision_fields(packet,now=NOW,modules={"stage5":"OFF"})
     assert resolved["status"]=="READY",resolved
     assert "STAGE5_DISABLED_STAGE0_OTHER_GATES_VERIFIED" in resolved["warnings"]
